@@ -167,11 +167,17 @@ def main(argv=None):
     if args.live and args.date:
         parser.error("--live uses today's market session; omit --date")
     if args.live and not args.symbols:
-        args.symbols = "nifty500.txt"
+        args.symbols = "nifty100.txt"
     if not args.live and bool(args.symbols) != bool(args.date):
         parser.error("Provide --symbols and --date together, or omit both to test login")
     if args.symbols and not Path(args.symbols).is_file():
-        parser.error("Symbol file not found")
+        parser.error("Symbol file not found. For NIFTY 100, prepare nifty100.txt from the official constituent CSV first.")
+    if args.live:
+        from universe import load_live_symbols
+        try:
+            load_live_symbols(args.symbols)
+        except (OSError, ValueError) as exc:
+            parser.error(str(exc))
     try:
         client_id = os.environ.get("FYERS_CLIENT_ID") or input("FYERS App ID: ").strip()
         secret = os.environ.get("FYERS_APP_SECRET") or getpass.getpass("FYERS app secret (hidden): ")

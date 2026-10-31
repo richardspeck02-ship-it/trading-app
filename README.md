@@ -1,4 +1,4 @@
-# NIFTY 500 opening-range scanner
+# Opening-range stock scanner
 
 Filters stocks whose second **and** third five-minute candles remain inside the
 first candle, including equal highs/lows (`[]`). Candle windows are 09:15–09:20,
@@ -58,25 +58,19 @@ For a real session, stop demo mode with Ctrl+C, then run before **09:15 IST** on
 trading day:
 
 ```powershell
-.\.venv312\Scripts\python.exe login.py --live --symbols .\nifty500.txt
+.\.venv312\Scripts\python.exe login.py --live --symbols .\nifty100.txt
 ```
 
 Complete the normal FYERS login. The dashboard opens at `http://127.0.0.1:8765`
 on your Windows PC. Keep PowerShell open. No trading app or order-placement
 permission is needed. There is no execution code in this feature.
 
-The app subscribes using FYERS' official `FyersDataSocket` with `SymbolUpdate`,
-in batches of 100. The pinned SDK's subscription implementation supports up to
-5,000 symbols, but actual account access and successful subscription of the
-uploaded 501 symbols still require validation in a market session. The page shows
-how many symbols have actually sent prices, not just how many were requested.
-Batch requests now wait two seconds between calls. PowerShell logs each batch
-and server subscription acknowledgement. Safe stream error categories and numeric
-codes appear in PowerShell and the dashboard's “Recent stream errors” section.
-Invalid-symbol details include only names already in the requested universe;
-raw responses, tokens, and arbitrary SDK exception text are omitted. Repeated
-subscription failures still require diagnosis from those codes; weekend closure
-alone does not establish their cause.
+Live mode is limited to 100 symbols for the user's Standard account. The SDK's
+5,000-symbol implementation capacity does not establish account entitlement.
+The uploaded NIFTY 500 list remains available for historical scans; live mode
+rejects lists over 100 before login or subscription, without truncating them.
+Other active subscriptions may consume part of the account-wide allowance.
+The page shows the selected universe and actual received-price coverage.
 
 - **Prices:** streamed from FYERS; the page polls the local server once per second.
 - **Provisional patterns:** built from prices that have a valid last-trade
@@ -269,3 +263,33 @@ connectivity check with this supplied snapshot:
 ```
 
 This scans the previous weekday and does not establish historical index membership.
+
+
+## Prepare the NIFTY 100 universe
+
+The default live symbol file is `nifty100.txt`, converted from the user-uploaded
+`ind_nifty100list.csv` on 2026-10-31. The supplied CSV contains exactly 100 unique
+EQ-series symbols; all 100 were retained. No DUMMY placeholder is present.
+The CSV has no effective membership date; this is a supplied snapshot, not an
+automatically refreshed or independently verified point-in-time universe.
+FYERS subscription validity still requires the authenticated runtime check.
+
+Download the constituent CSV from the official
+[NIFTY 100 page](https://www.niftyindices.com/indices/equity/broad-based-indices/nifty-100).
+For a future refresh, either upload that CSV in chat for conversion, or convert
+it locally to a new output filename (the bundled file is not overwritten):
+
+```powershell
+.\.venv312\Scripts\python.exe universe.py ".\ind_nifty100list.csv" --output nifty100-refreshed.txt
+.\.venv312\Scripts\python.exe login.py --live
+```
+
+The bundled list is ready to use with `login.py --live`; no conversion is needed
+for this snapshot. To use a refreshed file, pass `--symbols nifty100-refreshed.txt`.
+Adjust the CSV filename to match your download. The importer preserves symbols
+and series, rejects duplicates or lists over 100, and refuses to overwrite an
+existing output. It does not independently verify index membership or FYERS symbol
+availability; those depend on the official input and broker responses. A file
+with more than 100 entries requires a deliberate selection within the account
+limit; no rows are silently discarded. Starting other broker streams can reduce
+the allowance available to this scanner.

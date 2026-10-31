@@ -16,13 +16,15 @@ import webbrowser
 import requests
 
 from scanner import Candle, IST, evaluate, history_error, load_symbols, opening_request, progress
+from universe import load_live_symbols, validate_live_symbols
 
 
 class LiveState:
-    def __init__(self, symbols, session, demo=False):
+    def __init__(self, symbols, session, demo=False, universe="Custom watchlist"):
         self.symbols = symbols
         self.session = session
         self.demo = demo
+        self.universe = universe
         self.lock = threading.RLock()
         self.records = {s: {"price": None, "updated": None, "trade_time": None, "bars": {}}
                         for s in symbols}
@@ -111,7 +113,7 @@ class LiveState:
                              "stale": stale, "status": status, "levels": levels,
                              "error": official.get("error") if official else record.get("subscription_error")})
             return {"session": self.session.isoformat(), "time": now.isoformat(), "demo": self.demo,
-                    "feed": self.feed, "notice": self.notice, "total": len(rows),
+                    "feed": self.feed, "notice": self.notice, "universe": self.universe, "total": len(rows),
                     "seen": sum(r["price"] is not None for r in rows),
                     "verified": sum(o["status"] in ("match", "no_match") for o in self.official.values()),
                     "confirmed": sum(r["status"] == "Confirmed match" for r in rows),
@@ -208,6 +210,7 @@ def verify_worker(state, stop, client_id, token):
 
 
 def connect_feed(state, stop, client_id, token):
+    validate_live_symbols(state.symbols)
     from fyers_apiv3.FyersWebsocket.data_ws import FyersDataSocket
 
     def on_open():
@@ -305,13 +308,22 @@ def demo_state():
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--symbols", default="nifty500.txt")
+    parser.add_argument("--symbols", default="nifty100.txt")
     parser.add_argument("--demo", action="store_true", help="Synthetic demo, without broker credentials")
     args = parser.parse_args(argv)
     client_id, token = os.environ.get("FYERS_CLIENT_ID"), os.environ.get("FYERS_ACCESS_TOKEN")
     if not args.demo and (not client_id or not token):
-        parser.error("Run login.py --live --symbols nifty500.txt for a real session")
-    state = demo_state() if args.demo else LiveState(load_symbols(args.symbols), datetime.now(IST).date())
+        parser.error("Run login.py --live --symbols nifty100.txt for a real session")
+    if args.demo:
+        state = demo_state()
+        state.universe = "Synthetic demo"
+    else:
+        try:
+            symbols = load_live_symbols(args.symbols)
+        except (OSError, ValueError) as exc:
+            parser.error(str(exc))
+        label = "NIFTY 100" if Path(args.symbols).stem.lower() == "nifty100" else "Custom watchlist"
+        state = LiveState(symbols, datetime.now(IST).date(), universe=label)
     if not args.demo:
         now = datetime.now(IST)
         if now.weekday() >= 5:

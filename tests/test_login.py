@@ -3,9 +3,12 @@ import json
 import unittest
 import requests
 from unittest.mock import patch
+from contextlib import redirect_stderr, redirect_stdout
+import io
 from urllib.parse import parse_qs, urlsplit
 
 from login import LoginError, REDIRECT_URI, authorization_url, callback_code, exchange_code
+from login import main
 
 
 def response(status, body):
@@ -16,6 +19,25 @@ def response(status, body):
 
 
 class LoginTests(unittest.TestCase):
+    @patch.dict("os.environ", {"FYERS_CLIENT_ID": "private-client", "FYERS_APP_SECRET": "private-secret"})
+    @patch("login.login", return_value="private-token")
+    @patch("login.subprocess.run")
+    def test_live_defaults_to_nifty100_and_does_not_forward_secret(self, run, authenticate):
+        run.return_value.returncode = 0
+        with redirect_stdout(io.StringIO()):
+            self.assertEqual(main(["--live"]), 0)
+        command = run.call_args.args[0]
+        self.assertEqual(command[-2:], ["--symbols", "nifty100.txt"])
+        self.assertTrue(command[1].endswith("live_app.py"))
+        self.assertNotIn("FYERS_APP_SECRET", run.call_args.kwargs["env"])
+
+    @patch("login.login")
+    def test_oversized_live_universe_rejected_before_login(self, authenticate):
+        with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as caught:
+            main(["--live", "--symbols", "nifty500.txt"])
+        self.assertEqual(caught.exception.code, 2)
+        authenticate.assert_not_called()
+
     def test_login_url_uses_exact_redirect_and_state(self):
         parts = urlsplit(authorization_url("test-id", "random-state"))
         self.assertEqual(parts.netloc, "api-t1.fyers.in")

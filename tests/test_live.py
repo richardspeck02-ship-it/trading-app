@@ -134,7 +134,7 @@ class LiveTests(unittest.TestCase):
 
     @patch("fyers_apiv3.FyersWebsocket.data_ws.FyersDataSocket")
     def test_subscription_batches_and_error_callback(self, factory):
-        state = LiveState([f"NSE:TEST{i}-EQ" for i in range(201)], self.session)
+        state = LiveState([f"NSE:TEST{i}-EQ" for i in range(100)], self.session)
         stop = Mock()
         stop.is_set.return_value = False
         stop.wait.return_value = False
@@ -145,8 +145,13 @@ class LiveTests(unittest.TestCase):
             factory.call_args.kwargs["on_error"]({"code": 11011, "message": "private-response"})
             factory.call_args.kwargs["on_message"]({"s": "ok", "type": "sub"})
         batches = factory.return_value.subscribe.call_args_list
-        self.assertEqual([len(c.kwargs["symbols"]) for c in batches], [100, 100, 1])
-        self.assertEqual([c.args[0] for c in stop.wait.call_args_list], [2, 2, 2])
+        self.assertEqual([len(c.kwargs["symbols"]) for c in batches], [100])
+        self.assertEqual([c.args[0] for c in stop.wait.call_args_list], [2])
         self.assertEqual(state.snapshot()["subscription_acks"], 1)
         self.assertIn("FYERS code 11011", state.snapshot()["stream_errors"][0]["detail"])
         self.assertNotIn("private", logs.getvalue())
+
+    def test_oversized_universe_rejected_before_connecting(self):
+        state = LiveState([f"NSE:TEST{i}-EQ" for i in range(101)], self.session)
+        with self.assertRaisesRegex(ValueError, "at most 100"):
+            connect_feed(state, Mock(), "private-client", "private-token")
