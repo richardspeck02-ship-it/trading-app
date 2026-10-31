@@ -50,6 +50,17 @@ printing raw broker responses. Connected operation requires account credentials,
 network access to FYERS, and a verified universe; it is not validated by the
 offline example. Scheduled scans, a web interface, and trade execution are future work.
 
+### Progress logs
+
+The scanner prints timestamped progress immediately to PowerShell: client startup,
+the current symbol and total count, received candle counts, request failures,
+elapsed time, matching stocks, and the final summary. The SDK's current history
+call has no request timeout: if it stalls, the last `fetching candles...` line
+identifies the pending symbol. Logs do not imply a stalled request has finished.
+Progress goes to stderr; stdout remains valid JSON for saving results. No tokens,
+app secrets, raw broker responses, or exception contents are printed by these logs.
+Existing runs must finish or be restarted to use updated code.
+
 ## Windows: local login and scanning
 
 1. Extract the project ZIP into a folder, such as `Documents\trading-app`.

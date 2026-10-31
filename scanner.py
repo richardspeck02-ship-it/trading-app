@@ -17,6 +17,11 @@ IST = ZoneInfo("Asia/Kolkata")
 STARTS = (daytime(9, 15), daytime(9, 20), daytime(9, 25))
 
 
+def progress(message):
+    stamp = datetime.now(IST).strftime("%H:%M:%S IST")
+    print(f"[{stamp}] {message}", file=sys.stderr, flush=True)
+
+
 @dataclass(frozen=True)
 class Candle:
     timestamp: datetime
@@ -82,15 +87,22 @@ def load_symbols(path):
 
 def fetch_fyers(symbols, session):
     # Import only in connected mode so offline scanning has no dependencies.
+    progress("Loading FYERS client...")
     from fyers_apiv3 import fyersModel
 
     client_id = os.environ.get("FYERS_CLIENT_ID")
     token = os.environ.get("FYERS_ACCESS_TOKEN")
     if not client_id or not token:
         raise ValueError("Set FYERS_CLIENT_ID and FYERS_ACCESS_TOKEN securely before connected scanning")
+    progress("Initializing FYERS client...")
     client = fyersModel.FyersModel(client_id=client_id, token=token, is_async=False, log_path="")
     grouped, errors = {}, {}
-    for symbol in symbols:
+    started = time.monotonic()
+    progress(f"Scanning {len(symbols)} symbols for {session.isoformat()}; five-minute candles.")
+    for index, symbol in enumerate(symbols, 1):
+        request_started = time.monotonic()
+        label = f"[{index}/{len(symbols)}] {symbol}"
+        progress(f"{label}: fetching candles...")
         try:
             response = client.history(data={
                 "symbol": symbol, "resolution": "5", "date_format": "1",
@@ -99,14 +111,21 @@ def fetch_fyers(symbols, session):
             if response.get("s") != "ok":
                 # Avoid printing SDK responses, which can contain account information.
                 errors[symbol] = "FYERS history request failed"
+                progress(f"{label}: FAILED - FYERS history request rejected.")
                 continue
             grouped[symbol] = [Candle(datetime.fromtimestamp(c[0], IST),
                                       *(float(x) for x in c[1:5]))
                                for c in response["candles"]]
+            progress(f"{label}: received {len(grouped[symbol])} candles "
+                     f"({time.monotonic() - request_started:.1f}s).")
         except Exception:
             errors[symbol] = "Could not fetch or parse FYERS candles"
+            progress(f"{label}: FAILED - could not fetch or parse candles.")
         finally:
+            progress(f"Completed {index}/{len(symbols)}; fetched {len(grouped)}; "
+                     f"errors {len(errors)}; elapsed {time.monotonic() - started:.0f}s.")
             time.sleep(0.5)
+    progress("Fetching complete. Checking the opening three candles...")
     return grouped, errors
 
 
@@ -129,14 +148,23 @@ def main(argv=None):
                 parser.error("--fyers requires --symbols with current NIFTY 500 constituents")
             grouped, errors = fetch_fyers(load_symbols(args.symbols), args.date)
         else:
+            progress(f"Reading candle CSV for {args.date.isoformat()}...")
             grouped, errors = load_csv(args.csv), {}
         rows = []
         for symbol, candles in sorted(grouped.items()):
             try:
                 status, levels = evaluate(candles, args.date, now)
                 rows.append({"symbol": symbol, "status": status, **(levels or {})})
+                if status == "match":
+                    progress(f"MATCH: {symbol}")
+                elif status == "incomplete":
+                    progress(f"INCOMPLETE: {symbol} - missing opening candle data.")
             except ValueError:
                 errors[symbol] = "Invalid or duplicate candle data"
+                progress(f"FAILED: {symbol} - invalid or duplicate candle data.")
+        progress(f"Scan complete: {sum(r['status'] == 'match' for r in rows)} matches; "
+                 f"{sum(r['status'] == 'incomplete' for r in rows)} incomplete; "
+                 f"{len(errors)} errors. Printing JSON results.")
         print(json.dumps({"session": args.date.isoformat(), "timezone": "Asia/Kolkata",
                           "matches": [r for r in rows if r["status"] == "match"],
                           "results": rows, "errors": errors}, indent=2))
