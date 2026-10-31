@@ -57,7 +57,11 @@ def evaluate(candles, session, now):
         return "incomplete", None
     first, second, third = (selected[t] for t in STARTS)
     matches = all(c.low >= first.low and c.high <= first.high for c in (second, third))
-    return "match" if matches else "no_match", {"first_high": first.high, "first_low": first.low}
+    return "match" if matches else "no_match", {
+        "first_high": first.high, "first_low": first.low,
+        "second_high": second.high, "second_low": second.low,
+        "third_high": third.high, "third_low": third.low,
+    }
 
 
 def load_csv(path):
@@ -125,6 +129,15 @@ def history_with_backoff(client, data, label):
         time.sleep(delay)
 
 
+def opening_request(symbol, session):
+    start = datetime.combine(session, STARTS[0], IST)
+    # End before 09:30 so the 09:30 candle is not requested.
+    end = datetime.combine(session, daytime(9, 30), IST) - timedelta(seconds=1)
+    return {"symbol": symbol, "resolution": "5", "date_format": "0",
+            "range_from": str(int(start.timestamp())),
+            "range_to": str(int(end.timestamp())), "cont_flag": "1"}
+
+
 def fetch_fyers(symbols, session):
     # Import only in connected mode so offline scanning has no dependencies.
     progress("Loading FYERS client...")
@@ -138,25 +151,24 @@ def fetch_fyers(symbols, session):
     client = fyersModel.FyersModel(client_id=client_id, token=token, is_async=False, log_path="")
     grouped, errors = {}, {}
     started = time.monotonic()
-    progress(f"Scanning {len(symbols)} symbols for {session.isoformat()}; five-minute candles.")
+    progress(f"Scanning {len(symbols)} symbols for {session.isoformat()}; "
+             "only 09:15, 09:20 and 09:25 IST five-minute candles.")
     for index, symbol in enumerate(symbols, 1):
         request_started = time.monotonic()
         label = f"[{index}/{len(symbols)}] {symbol}"
         progress(f"{label}: fetching candles...")
         try:
-            response = history_with_backoff(client, {
-                "symbol": symbol, "resolution": "5", "date_format": "1",
-                "range_from": session.isoformat(), "range_to": session.isoformat(), "cont_flag": "1",
-            }, label)
+            response = history_with_backoff(client, opening_request(symbol, session), label)
             if not isinstance(response, dict) or response.get("s") != "ok":
                 # Avoid printing SDK responses, which can contain account information.
                 detail, _ = history_error(response)
                 errors[symbol] = detail
                 progress(f"{label}: FAILED - {detail}.")
                 continue
-            grouped[symbol] = [Candle(datetime.fromtimestamp(c[0], IST),
-                                      *(float(x) for x in c[1:5]))
-                               for c in response["candles"]]
+            candles = [Candle(datetime.fromtimestamp(c[0], IST), *(float(x) for x in c[1:5]))
+                       for c in response["candles"]]
+            grouped[symbol] = [c for c in candles if c.timestamp.date() == session
+                               and c.timestamp.time() in STARTS]
             progress(f"{label}: received {len(grouped[symbol])} candles "
                      f"({time.monotonic() - request_started:.1f}s).")
         except HistoryRateLimit as exc:
@@ -177,6 +189,36 @@ def fetch_fyers(symbols, session):
     return grouped, errors
 
 
+def save_report(directory, report, grouped):
+    """Write a distinct run folder, preserving earlier runs and failed coverage."""
+    folder = Path(directory) / (report["session"] + "_" + datetime.now(IST).strftime("%Y%m%d_%H%M%S_%f"))
+    folder.mkdir(parents=True, exist_ok=False)
+    (folder / "report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
+    (folder / "watchlist.txt").write_text(
+        "".join(r["symbol"] + "\n" for r in report["matches"]), encoding="utf-8")
+    retry = sorted(set(report["errors"]) | {r["symbol"] for r in report["results"]
+                                           if r["status"] == "incomplete"})
+    (folder / "failed-symbols.txt").write_text("".join(s + "\n" for s in retry), encoding="utf-8")
+    with (folder / "matches.csv").open("w", newline="", encoding="utf-8") as stream:
+        fields = ["symbol", "status", "first_high", "first_low", "second_high",
+                  "second_low", "third_high", "third_low"]
+        writer = csv.DictWriter(stream, fieldnames=fields)
+        writer.writeheader()
+        writer.writerows(report["matches"])
+    with (folder / "candles.csv").open("w", newline="", encoding="utf-8") as stream:
+        writer = csv.writer(stream)
+        writer.writerow(["symbol", "timestamp", "open", "high", "low", "close"])
+        for symbol, candles in sorted(grouped.items()):
+            for candle in candles:
+                writer.writerow([symbol, candle.timestamp.isoformat(), candle.open,
+                                 candle.high, candle.low, candle.close])
+    progress(f"Saved results to {folder.resolve()}")
+    progress("watchlist.txt contains local matching symbols; the FYERS account watchlist has not been changed.")
+    if not report["complete"]:
+        progress("PARTIAL RESULTS: failed or incomplete stocks are listed in failed-symbols.txt.")
+    return folder
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     source = parser.add_mutually_exclusive_group(required=True)
@@ -184,6 +226,7 @@ def main(argv=None):
     source.add_argument("--fyers", action="store_true", help="Read FYERS historical candles")
     parser.add_argument("--symbols", help="One FYERS symbol per line; required for FYERS mode")
     parser.add_argument("--date", required=True, type=date.fromisoformat, help="NSE session date YYYY-MM-DD")
+    parser.add_argument("--output-dir", help="Save report, candles, matching symbols, and failed symbols in a new run folder")
     args = parser.parse_args(argv)
     now = datetime.now(IST)
     if args.date.weekday() >= 5:
@@ -213,10 +256,15 @@ def main(argv=None):
         progress(f"Scan complete: {sum(r['status'] == 'match' for r in rows)} matches; "
                  f"{sum(r['status'] == 'incomplete' for r in rows)} incomplete; "
                  f"{len(errors)} errors. Printing JSON results.")
-        print(json.dumps({"session": args.date.isoformat(), "timezone": "Asia/Kolkata",
-                          "matches": [r for r in rows if r["status"] == "match"],
-                          "results": rows, "errors": errors}, indent=2))
-        return 1 if errors or any(r["status"] == "incomplete" for r in rows) else 0
+        complete = not errors and all(r["status"] != "incomplete" for r in rows)
+        report = {"session": args.date.isoformat(), "timezone": "Asia/Kolkata",
+                  "complete": complete,
+                  "matches": [r for r in rows if r["status"] == "match"],
+                  "results": rows, "errors": errors}
+        if args.output_dir:
+            save_report(args.output_dir, report, grouped)
+        print(json.dumps(report, indent=2))
+        return 0 if complete else 1
     except (ValueError, OSError, KeyError, ImportError) as exc:
         parser.error(str(exc))
 

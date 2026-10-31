@@ -126,6 +126,53 @@ FYERS responses; actual account authorization remains unverified until you try i
 The authentication endpoint and payload follow the official FYERS 3.1.7 Python
 SDK distributed on [PyPI](https://pypi.org/project/fyers-apiv3/3.1.7/).
 
+## Historical pattern scan and watchlist output
+
+Requests now use epoch bounds from 09:15:00 through 09:29:59 IST, requesting only
+the candle starts at 09:15, 09:20, and 09:25. Any extra candles returned are filtered
+out. This still requires one request per symbol, plus any rate-limit retries.
+The same inclusive high/low rule is applied to historical sessions. This is a
+historical pattern scan; returns or profit cannot be calculated without entry,
+exit, sizing, and execution rules.
+
+For the last trading session before Saturday 2026-10-31, use the session
+2026-10-30, for which earlier user runs received market data:
+
+```powershell
+git pull
+.\.venv312\Scripts\python.exe login.py --symbols .\nifty500.txt --date 2026-10-30
+```
+
+After login the scanner creates a distinct timestamped folder under `results`:
+
+- `report.json`: matches, every evaluated status, errors, and a `complete` flag.
+- `matches.csv`: matching stocks and the high/low of each of the three candles.
+- `watchlist.txt`: one matching FYERS symbol per line, for reference.
+- `candles.csv`: fetched opening candles, usable for offline reruns.
+- `failed-symbols.txt`: failed/incomplete stocks for a targeted retry.
+
+The terminal prints the exact output folder. Results from failed/incomplete runs
+are marked partial; those stocks are never treated as non-matches. A new run does
+not replace prior files. To retry only failed stocks, use that run's
+`failed-symbols.txt` as `--symbols` (only if it is nonempty). To rerun calculations
+without consuming API calls:
+
+```powershell
+.\.venv312\Scripts\python.exe scanner.py --csv .\results\YOUR_RUN_FOLDER\candles.csv --date 2026-10-30
+```
+
+An offline rerun covers only the symbols present in that candle file; refer to the
+original report for missing coverage. An empty candle file cannot validate a scan.
+Historical index membership is not independently established by the uploaded list.
+
+**FYERS watchlist limitation:** the pinned official SDK has no watchlist creation
+or modification method. Current online API documentation could not be checked
+here (HTTP 403), and no supported watchlist-write endpoint has been verified.
+The program does not change your FYERS account watchlist. `watchlist.txt` is a
+local list, not a verified FYERS import format. Use the results to add stocks
+through FYERS' UI; its import capability/format needs checking before automating
+that step. No browser session cookies or undocumented account endpoints are used.
+
 
 ## Uploaded constituent snapshot
 
