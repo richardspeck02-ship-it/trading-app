@@ -1,7 +1,10 @@
 import hashlib
 import io
 import json
+import socket
+import ssl
 import unittest
+from urllib.error import HTTPError, URLError
 from unittest.mock import patch
 from urllib.parse import parse_qs, urlsplit
 
@@ -58,6 +61,38 @@ class LoginTests(unittest.TestCase):
         with self.assertRaises(LoginError) as caught:
             exchange_code("id", "secret", "code")
         self.assertNotIn("private-response", str(caught.exception))
+        self.assertIn("timed out", str(caught.exception))
+
+    @patch("login.urllib.request.urlopen")
+    def test_http_failure_exposes_only_status_and_numeric_code(self, request):
+        request.side_effect = HTTPError("https://example.invalid", 400, "private-reason", {},
+                                        io.BytesIO(b'{"code":-999,"message":"private-response","access_token":"private-token"}'))
+        with self.assertRaises(LoginError) as caught:
+            exchange_code("id", "secret", "code")
+        self.assertIn("HTTP 400", str(caught.exception))
+        self.assertIn("FYERS code -999", str(caught.exception))
+        self.assertNotIn("private", str(caught.exception))
+
+    @patch("login.urllib.request.urlopen")
+    def test_non_json_http_failure_is_reported(self, request):
+        request.side_effect = HTTPError("https://example.invalid", 403, "private-reason", {},
+                                        io.BytesIO(b'<html>private-response</html>'))
+        with self.assertRaises(LoginError) as caught:
+            exchange_code("id", "secret", "code")
+        self.assertIn("HTTP 403", str(caught.exception))
+        self.assertNotIn("private", str(caught.exception))
+
+    @patch("login.urllib.request.urlopen")
+    def test_connection_categories(self, request):
+        for reason, expected in ((ssl.SSLCertVerificationError(1, "private"), "certificate"),
+                                 (socket.gaierror(1, "private"), "DNS"),
+                                 (TimeoutError("private"), "timed out")):
+            with self.subTest(expected=expected):
+                request.side_effect = URLError(reason)
+                with self.assertRaises(LoginError) as caught:
+                    exchange_code("id", "secret", "code")
+                self.assertIn(expected, str(caught.exception))
+                self.assertNotIn("private", str(caught.exception))
 
 
 if __name__ == "__main__":
