@@ -35,8 +35,8 @@ python -m venv .venv
 Set `FYERS_CLIENT_ID` and `FYERS_ACCESS_TOKEN` through your secure environment.
 The scanner does not load `.env` files automatically. Provide a current, verified
 NIFTY 500 constituent list in a text file, one FYERS symbol per line, such as
-`NSE:RELIANCE-EQ`. No constituent list is bundled; the scanner checks every symbol
-supplied but cannot establish index membership. Use date-appropriate membership
+`NSE:RELIANCE-EQ`. A user-supplied snapshot is bundled as `nifty500.txt` (see below); the scanner
+checks every symbol supplied but cannot establish index membership. Use date-appropriate membership
 for historical sessions.
 
 ```sh
@@ -107,3 +107,28 @@ FYERS responses; actual account authorization remains unverified until you try i
 
 The authentication endpoint and payload follow the official FYERS 3.1.7 Python
 SDK distributed on [PyPI](https://pypi.org/project/fyers-apiv3/3.1.7/).
+
+
+## Uploaded constituent snapshot
+
+`nifty500.txt` was converted from the user-supplied `ind_nifty500list (1).csv`
+on 2026-10-31. The upload contains 501 unique entries: 496 EQ, two BE, and
+three RR. All are retained using `NSE:<Symbol>-<Series>`, including punctuation.
+The filename is the index name; it is not an assertion of exactly 500 rows.
+The CSV does not identify an effective membership date. This is a supplied
+snapshot, not an automatically refreshed or independently verified index list.
+FYERS' public symbol-master download returned HTTP 403 during preparation,
+so these mappings have not been verified against that master. History failures
+remain explicit errors; no entries were silently dropped or converted to EQ.
+The loader accepts EQ, BE, and RR series. Earlier instructions to supply only
+EQ symbols are examples for ordinary equities, not a requirement to remove
+other series from this uploaded snapshot.
+
+Use a date-appropriate constituent list for historical scans. For a first
+connectivity check with this supplied snapshot:
+
+```powershell
+.\.venv312\Scripts\python.exe login.py --symbols .\nifty500.txt --date 2026-10-30
+```
+
+This scans the previous weekday and does not establish historical index membership.

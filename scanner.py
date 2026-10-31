@@ -5,6 +5,7 @@ import csv
 import json
 import math
 import os
+import re
 import sys
 import time
 from dataclasses import dataclass
@@ -74,8 +75,8 @@ def load_symbols(path):
                if line.strip() and not line.lstrip().startswith("#")]
     if not symbols or len(set(symbols)) != len(symbols):
         raise ValueError("Symbol list must be nonempty and contain no duplicates")
-    if any(not s.startswith("NSE:") or not s.endswith("-EQ") for s in symbols):
-        raise ValueError("Use FYERS cash equity symbols, e.g. NSE:RELIANCE-EQ")
+    if any(not re.fullmatch(r"NSE:[A-Z0-9&-]+-(EQ|BE|RR)", s) for s in symbols):
+        raise ValueError("Use FYERS NSE symbols with EQ, BE, or RR series, e.g. NSE:RELIANCE-EQ")
     return symbols
 
 
