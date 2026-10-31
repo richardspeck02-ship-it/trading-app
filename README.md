@@ -7,7 +7,7 @@ and does not place orders.
 
 ## Run offline
 
-Python 3.12 is supported. No packages are needed for CSV scans or tests.
+Python 3.12 is supported. The full test suite requires the installed dependencies for login tests.
 
 ```sh
 python -m unittest discover -s tests -v

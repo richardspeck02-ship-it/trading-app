@@ -3,18 +3,14 @@
 import argparse
 import getpass
 import hashlib
-import json
 import os
 from pathlib import Path
 import secrets
-import socket
-import ssl
 import subprocess
 import sys
 import time
-import urllib.error
 import urllib.parse
-import urllib.request
+import requests
 import webbrowser
 from datetime import date
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -92,31 +88,33 @@ def make_handler(state):
 
 
 def exchange_code(client_id, secret, code):
-    payload = json.dumps({
+    payload = {
         "grant_type": "authorization_code",
         "appIdHash": hashlib.sha256(f"{client_id}:{secret}".encode()).hexdigest(),
         "code": code,
-    }).encode()
-    request = urllib.request.Request(TOKEN_URL, data=payload,
-                                     headers={"Content-Type": "application/json"})
+    }
     try:
-        with urllib.request.urlopen(request, timeout=30) as response:
-            result = json.load(response)
-    except urllib.error.HTTPError as exc:
+        # Use the same requests/JSON transport as FYERS' official SDK.
+        # Keep TLS verification enabled and prevent code-bearing redirects.
+        response = requests.post(TOKEN_URL, json=payload, timeout=30, allow_redirects=False)
+    except requests.exceptions.SSLError:
+        raise LoginError("Token exchange failed: TLS certificate verification failed. Check Windows date/time and certificate trust; keep verification enabled.") from None
+    except requests.exceptions.Timeout:
+        raise LoginError("Token exchange failed: connection timed out. Check connectivity and retry a fresh login.") from None
+    except requests.exceptions.RequestException:
+        raise LoginError("Token exchange failed: network connection error. Check connectivity, firewall, and proxy settings, then retry.") from None
+    with response:
         try:
-            result = json.loads(exc.read(65536))
-        except (OSError, ValueError):
+            result = response.json()
+        except ValueError:
             result = None
-        finally:
-            exc.close()
-        raise LoginError(f"Token exchange rejected: HTTP {exc.code}{broker_code(result)}. "
-                         "Check the App ID and Secret ID belong to the same app, then retry a fresh login.") from None
-    except urllib.error.URLError as exc:
-        raise LoginError(connection_error(exc.reason)) from None
-    except OSError as exc:
-        raise LoginError(connection_error(exc)) from None
-    except ValueError:
-        raise LoginError("Token exchange received an invalid JSON response. Check for a network sign-in page or filtering proxy.") from None
+        if not 200 <= response.status_code < 300:
+            kind = "JSON" if result is not None else "non-JSON"
+            raise LoginError(f"Token exchange rejected: HTTP {response.status_code}{broker_code(result)}; {kind} response. "
+                             "A refusal without a FYERS code does not establish incorrect credentials. "
+                             "If it persists, contact FYERS support with this status and the attempt time.")
+        if result is None:
+            raise LoginError("Token exchange received an invalid JSON response. Check for a network sign-in page or filtering proxy.")
     if not isinstance(result, dict) or result.get("s") != "ok":
         raise LoginError(f"FYERS rejected the token exchange{broker_code(result)}. "
                          "Check app credentials and the registered redirect URL.")
@@ -132,16 +130,6 @@ def broker_code(result):
     if type(value) is int and -1000000 <= value <= 1000000:
         return f" (FYERS code {value})"
     return ""
-
-
-def connection_error(reason):
-    if isinstance(reason, ssl.SSLCertVerificationError):
-        return "Token exchange failed: TLS certificate verification failed. Check Windows date/time and certificate trust; keep verification enabled."
-    if isinstance(reason, (TimeoutError, socket.timeout)):
-        return "Token exchange failed: connection timed out. Check connectivity and retry a fresh login."
-    if isinstance(reason, socket.gaierror):
-        return "Token exchange failed: DNS lookup failed. Check your internet connection and DNS settings."
-    return "Token exchange failed: network connection error. Check connectivity, firewall, and proxy settings, then retry."
 
 
 def login(client_id, secret):
