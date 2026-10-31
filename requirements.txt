@@ -1,0 +1,2 @@
+fyers-apiv3==3.1.7
+tzdata==2026.2
