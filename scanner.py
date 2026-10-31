@@ -194,6 +194,11 @@ def save_report(directory, report, grouped):
     folder = Path(directory) / (report["session"] + "_" + datetime.now(IST).strftime("%Y%m%d_%H%M%S_%f"))
     folder.mkdir(parents=True, exist_ok=False)
     (folder / "report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
+    with (folder / "summary.csv").open("w", newline="", encoding="utf-8") as stream:
+        writer = csv.writer(stream)
+        writer.writerow(["status", "stock"])
+        for status, symbols in summary_groups(report).items():
+            writer.writerows((status, stock_name(s)) for s in symbols)
     (folder / "watchlist.txt").write_text(
         "".join(r["symbol"] + "\n" for r in report["matches"]), encoding="utf-8")
     retry = sorted(set(report["errors"]) | {r["symbol"] for r in report["results"]
@@ -219,15 +224,48 @@ def save_report(directory, report, grouped):
     return folder
 
 
+def stock_name(symbol):
+    name = symbol.split(":", 1)[-1]
+    if name.rsplit("-", 1)[-1] in ("EQ", "BE", "RR"):
+        name = name.rsplit("-", 1)[0]
+    return name
+
+
+def summary_groups(report):
+    groups = {"match": set(), "no-match": set(), "error": set(report["errors"])}
+    for row in report["results"]:
+        key = {"match": "match", "no_match": "no-match"}.get(row["status"], "error")
+        groups[key].add(row["symbol"])
+    for key in ("match", "no-match"):
+        groups[key].difference_update(groups["error"])
+    return {key: sorted(symbols) for key, symbols in groups.items()}
+
+
+def print_summary(report):
+    for status, symbols in summary_groups(report).items():
+        print(f"\n{status.upper()}")
+        print("\n".join(stock_name(s) for s in symbols) if symbols else "(none)")
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument("--csv", help="Offline candles: symbol,timestamp,open,high,low,close")
     source.add_argument("--fyers", action="store_true", help="Read FYERS historical candles")
+    source.add_argument("--report", help="Print a saved report.json as names and statuses; no API requests")
     parser.add_argument("--symbols", help="One FYERS symbol per line; required for FYERS mode")
-    parser.add_argument("--date", required=True, type=date.fromisoformat, help="NSE session date YYYY-MM-DD")
+    parser.add_argument("--date", type=date.fromisoformat, help="NSE session date YYYY-MM-DD")
     parser.add_argument("--output-dir", help="Save report, candles, matching symbols, and failed symbols in a new run folder")
     args = parser.parse_args(argv)
+    if args.report:
+        try:
+            report = json.loads(Path(args.report).read_text(encoding="utf-8"))
+            print_summary(report)
+            return 0 if report.get("complete", False) else 1
+        except (ValueError, OSError, KeyError, TypeError, AttributeError):
+            parser.error("Could not read a valid scanner report.json")
+    if args.date is None:
+        parser.error("--date is required for a candle scan")
     now = datetime.now(IST)
     if args.date.weekday() >= 5:
         parser.error("Choose a weekday NSE session (exchange holidays are not inferred)")
@@ -255,7 +293,7 @@ def main(argv=None):
                 progress(f"FAILED: {symbol} - invalid or duplicate candle data.")
         progress(f"Scan complete: {sum(r['status'] == 'match' for r in rows)} matches; "
                  f"{sum(r['status'] == 'incomplete' for r in rows)} incomplete; "
-                 f"{len(errors)} errors. Printing JSON results.")
+                 f"{len(errors)} errors.")
         complete = not errors and all(r["status"] != "incomplete" for r in rows)
         report = {"session": args.date.isoformat(), "timezone": "Asia/Kolkata",
                   "complete": complete,
@@ -263,7 +301,7 @@ def main(argv=None):
                   "results": rows, "errors": errors}
         if args.output_dir:
             save_report(args.output_dir, report, grouped)
-        print(json.dumps(report, indent=2))
+        print_summary(report)
         return 0 if complete else 1
     except (ValueError, OSError, KeyError, ImportError) as exc:
         parser.error(str(exc))

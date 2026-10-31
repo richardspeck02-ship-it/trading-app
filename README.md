@@ -123,7 +123,8 @@ the current symbol and total count, received candle counts, request failures,
 elapsed time, matching stocks, and the final summary. The SDK's current history
 call has no request timeout: if it stalls, the last `fetching candles...` line
 identifies the pending symbol. Logs do not imply a stalled request has finished.
-Progress goes to stderr; stdout remains valid JSON for saving results. No tokens,
+Progress goes to stderr; stdout shows MATCH, NO-MATCH, and ERROR groups with stock
+names only. Detailed JSON is saved in the run folder. No tokens,
 app secrets, raw broker responses, or exception contents are printed by these logs.
 Existing runs must finish or be restarted to use updated code.
 
@@ -293,3 +294,21 @@ availability; those depend on the official input and broker responses. A file
 with more than 100 entries requires a deliberate selection within the account
 limit; no rows are silently discarded. Starting other broker streams can reduce
 the allowance available to this scanner.
+
+
+## Names-only scan summaries
+
+Historical scans now print three groups: **MATCH**, **NO-MATCH**, and **ERROR**,
+containing stock names without exchange/series prefixes or candle prices.
+Incomplete candle data belongs in ERROR, never NO-MATCH. New saved runs include
+`summary.csv` with just `status,stock`; detailed candle calculations remain in
+`report.json`, `matches.csv`, and `candles.csv` for audit.
+
+An existing report can be displayed without broker login or new API requests:
+
+```powershell
+.\.venv312\Scripts\python.exe scanner.py --report .\results\YOUR_RUN_FOLDER\report.json
+```
+
+This works with reports generated before the summary update too. Live browser
+prices and its exports are unaffected by this terminal-summary change.

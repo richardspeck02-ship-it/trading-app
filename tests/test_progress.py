@@ -61,11 +61,12 @@ class ProgressTests(unittest.TestCase):
         self.assertIn("Fetching complete", log)
         self.assertNotIn("private", log)
 
-    def test_progress_does_not_mix_with_json_results(self):
+    def test_terminal_summary_shows_names_without_prices(self):
         output, logs = io.StringIO(), io.StringIO()
         with redirect_stdout(output), redirect_stderr(logs):
             result = main(["--csv", "examples/candles.csv", "--date", "2026-10-30"])
         self.assertEqual(result, 0)
-        self.assertEqual(len(json.loads(output.getvalue())["matches"]), 1)
+        self.assertEqual(output.getvalue(), "\nMATCH\nDEMO_MATCH\n\nNO-MATCH\nDEMO_REJECT\n\nERROR\n(none)\n")
+        self.assertNotIn("110", output.getvalue())
         self.assertIn("MATCH: DEMO_MATCH", logs.getvalue())
         self.assertIn("Scan complete: 1 matches", logs.getvalue())

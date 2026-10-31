@@ -8,10 +8,32 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from scanner import IST, fetch_fyers, main, opening_request, save_report
+from scanner import IST, fetch_fyers, main, opening_request, save_report, print_summary
 
 
 class ReportTests(unittest.TestCase):
+    def test_summary_preserves_punctuation_and_treats_incomplete_as_error(self):
+        report = {"results": [{"symbol": "NSE:M&M-EQ", "status": "match", "first_high": 123},
+                              {"symbol": "NSE:BAJAJ-AUTO-EQ", "status": "no_match"},
+                              {"symbol": "NSE:ABB-EQ", "status": "incomplete"}],
+                  "errors": {"NSE:ACC-EQ": "private-response"}}
+        output = io.StringIO()
+        with redirect_stdout(output):
+            print_summary(report)
+        self.assertEqual(output.getvalue(), "\nMATCH\nM&M\n\nNO-MATCH\nBAJAJ-AUTO\n\nERROR\nABB\nACC\n")
+
+    @patch("scanner.fetch_fyers")
+    def test_saved_report_can_be_summarized_without_api_calls(self, fetch):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "report.json"
+            path.write_text(json.dumps({"complete": True, "results": [{"symbol": "NSE:ABB-EQ", "status": "match"}], "errors": {}}))
+            output = io.StringIO()
+            with redirect_stdout(output):
+                code = main(["--report", str(path)])
+            self.assertEqual(code, 0)
+            self.assertIn("MATCH\nABB", output.getvalue())
+            fetch.assert_not_called()
+
     def test_request_covers_only_first_three_candle_starts(self):
         request = opening_request("NSE:ABB-EQ", date(2026, 10, 30))
         self.assertEqual(request["date_format"], "0")
