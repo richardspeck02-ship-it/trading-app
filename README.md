@@ -70,6 +70,13 @@ in batches of 100. The pinned SDK's subscription implementation supports up to
 5,000 symbols, but actual account access and successful subscription of the
 uploaded 501 symbols still require validation in a market session. The page shows
 how many symbols have actually sent prices, not just how many were requested.
+Batch requests now wait two seconds between calls. PowerShell logs each batch
+and server subscription acknowledgement. Safe stream error categories and numeric
+codes appear in PowerShell and the dashboard's “Recent stream errors” section.
+Invalid-symbol details include only names already in the requested universe;
+raw responses, tokens, and arbitrary SDK exception text are omitted. Repeated
+subscription failures still require diagnosis from those codes; weekend closure
+alone does not establish their cause.
 
 - **Prices:** streamed from FYERS; the page polls the local server once per second.
 - **Provisional patterns:** built from prices that have a valid last-trade

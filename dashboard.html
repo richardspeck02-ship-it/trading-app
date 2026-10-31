@@ -6,6 +6,7 @@
 </style></head><body>
 <header><div><h1>Garv System</h1><p>Live opening-range scanner · NIFTY 500</p></div><div><strong id="health">Connecting to dashboard…</strong><br><small id="clock"></small></div></header>
 <div class="notice" id="notice" role="status">Waiting for scanner state.</div>
+<details id="errors" hidden><summary>Recent stream errors</summary><ul id="error-list"></ul></details>
 <section class="stats"><div class="card"><strong id="confirmed">0</strong><span>Confirmed matches</span></div><div class="card"><strong id="candidate">0</strong><span>Provisional candidates</span></div><div class="card"><strong id="coverage">0 / 0</strong><span>Symbols with prices</span></div><div class="card"><strong id="verified">0 / 0</strong><span>Patterns confirmed or rejected</span></div></section>
 <p><strong>Rule:</strong> 09:20 and 09:25 five-minute candle highs ≤ the 09:15 high, and lows ≥ the 09:15 low. Wicks and equality count. Before 09:30 the pattern is still forming.</p>
 <section class="controls"><label>Show <select id="filter"><option value="candidates">Matches &amp; candidates</option><option value="confirmed">Confirmed matches only</option><option value="all">All stocks</option></select></label><input id="search" type="search" aria-label="Search stock symbol" placeholder="Search stock symbol"><a class="download" href="/matches.csv">Download confirmed CSV</a><a class="download" href="/watchlist.txt">Download symbol list</a></section>
@@ -21,6 +22,8 @@ function render(){if(!latest)return;const s=latest;
 byId('health').textContent=(s.demo?'DEMO · ':'')+s.feed;
 byId('clock').textContent=s.session+' · '+ist(s.time)+' IST';
 byId('notice').textContent=s.notice;
+const errors=s.stream_errors||[];byId('errors').hidden=errors.length===0;
+const errorList=document.createDocumentFragment();for(const error of errors){const li=document.createElement('li');li.textContent=ist(error.time)+' IST · '+error.detail;errorList.appendChild(li);}byId('error-list').replaceChildren(errorList);
 byId('confirmed').textContent=s.confirmed;
 byId('candidate').textContent=s.rows.filter(r=>r.status.includes('provisional')&&!r.status.startsWith('Outside')).length;
 byId('coverage').textContent=s.seen+' / '+s.total;

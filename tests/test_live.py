@@ -5,7 +5,7 @@ import json
 import unittest
 from unittest.mock import Mock, patch
 
-from live_app import LiveState, demo_state, verify_worker
+from live_app import LiveState, connect_feed, demo_state, stream_error_details, verify_worker
 from scanner import Candle, IST
 
 
@@ -114,3 +114,39 @@ class LiveTests(unittest.TestCase):
         self.assertTrue(data["demo"])
         self.assertIn("DEMO", data["feed"])
         self.assertEqual(data["confirmed"], 1)
+
+    def test_stream_error_exposes_safe_code_and_known_symbols_only(self):
+        detail, invalid = stream_error_details({"code": -300, "type": "sub", "message": "private-token",
+                                               "invalid_symbols": ["NSE:ABB-EQ", "private-secret"]}, self.state.records)
+        self.assertIn("FYERS code -300", detail)
+        self.assertEqual(invalid, ["NSE:ABB-EQ"])
+        self.assertNotIn("private", detail)
+
+    def test_stream_error_categories_do_not_assume_weekend_is_cause(self):
+        for message, expected in (({"code": 11011, "message": "private"}, "rejected a subscription"),
+                                  ({"code": -300, "type": "sub", "message": "private"}, "conversion"),
+                                  ("Handshake status 403 private-token", "handshake"),
+                                  (RuntimeError("private-token"), "SDK error")):
+            with self.subTest(expected=expected):
+                detail, _ = stream_error_details(message, self.state.records)
+                self.assertIn(expected, detail)
+                self.assertNotIn("private", detail)
+
+    @patch("fyers_apiv3.FyersWebsocket.data_ws.FyersDataSocket")
+    def test_subscription_batches_and_error_callback(self, factory):
+        state = LiveState([f"NSE:TEST{i}-EQ" for i in range(201)], self.session)
+        stop = Mock()
+        stop.is_set.return_value = False
+        stop.wait.return_value = False
+        factory.return_value.connect.side_effect = lambda: factory.call_args.kwargs["on_connect"]()
+        logs = io.StringIO()
+        with redirect_stderr(logs):
+            connect_feed(state, stop, "private-client", "private-token")
+            factory.call_args.kwargs["on_error"]({"code": 11011, "message": "private-response"})
+            factory.call_args.kwargs["on_message"]({"s": "ok", "type": "sub"})
+        batches = factory.return_value.subscribe.call_args_list
+        self.assertEqual([len(c.kwargs["symbols"]) for c in batches], [100, 100, 1])
+        self.assertEqual([c.args[0] for c in stop.wait.call_args_list], [2, 2, 2])
+        self.assertEqual(state.snapshot()["subscription_acks"], 1)
+        self.assertIn("FYERS code 11011", state.snapshot()["stream_errors"][0]["detail"])
+        self.assertNotIn("private", logs.getvalue())
