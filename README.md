@@ -61,6 +61,13 @@ Progress goes to stderr; stdout remains valid JSON for saving results. No tokens
 app secrets, raw broker responses, or exception contents are printed by these logs.
 Existing runs must finish or be restarted to use updated code.
 
+History rejections now include numeric FYERS error codes when present and safe
+categories rather than raw response text. Generic failures are not assumed to be
+rate limits. Explicit rate-limit responses receive at most two retries, after
+30 and 60 seconds. If still limited, requests stop and remaining symbols are
+reported as not fetched. These delays are a retry policy, not a claim about
+FYERS' published quotas. Successful symbols remain available in the final output.
+
 ## Windows: local login and scanning
 
 1. Extract the project ZIP into a folder, such as `Documents\trading-app`.

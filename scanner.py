@@ -85,6 +85,46 @@ def load_symbols(path):
     return symbols
 
 
+def history_error(response):
+    """Describe only whitelisted categories and numeric broker codes."""
+    if not isinstance(response, dict):
+        return "FYERS returned an unexpected response", False
+    code = response.get("code")
+    suffix = f" (FYERS code {code})" if type(code) is int and abs(code) <= 1000000 else ""
+    message = response.get("message", "")
+    message = message.lower() if isinstance(message, str) else ""
+    limited = (type(code) is int and code in (429, -429)) or any(
+        phrase in message for phrase in ("rate limit", "rate-limit", "too many requests", "request limit"))
+    if limited:
+        category = "FYERS reported a rate limit"
+    elif "symbol" in message and any(word in message for word in ("invalid", "unknown", "not found")):
+        category = "FYERS reported an invalid or unknown symbol"
+    elif any(word in message for word in ("token", "unauthorized", "authentication")):
+        category = "FYERS reported an authentication error"
+    else:
+        category = "FYERS history request rejected"
+    return category + suffix, limited
+
+
+class HistoryRateLimit(Exception):
+    pass
+
+
+def history_with_backoff(client, data, label):
+    for attempt in range(3):
+        response = client.history(data=data)
+        if isinstance(response, dict) and response.get("s") == "ok":
+            return response
+        detail, limited = history_error(response)
+        if not limited:
+            return response
+        if attempt == 2:
+            raise HistoryRateLimit(detail)
+        delay = 30 * (attempt + 1)
+        progress(f"{label}: {detail}; pausing {delay}s before retry {attempt + 1}/2.")
+        time.sleep(delay)
+
+
 def fetch_fyers(symbols, session):
     # Import only in connected mode so offline scanning has no dependencies.
     progress("Loading FYERS client...")
@@ -104,20 +144,28 @@ def fetch_fyers(symbols, session):
         label = f"[{index}/{len(symbols)}] {symbol}"
         progress(f"{label}: fetching candles...")
         try:
-            response = client.history(data={
+            response = history_with_backoff(client, {
                 "symbol": symbol, "resolution": "5", "date_format": "1",
                 "range_from": session.isoformat(), "range_to": session.isoformat(), "cont_flag": "1",
-            })
-            if response.get("s") != "ok":
+            }, label)
+            if not isinstance(response, dict) or response.get("s") != "ok":
                 # Avoid printing SDK responses, which can contain account information.
-                errors[symbol] = "FYERS history request failed"
-                progress(f"{label}: FAILED - FYERS history request rejected.")
+                detail, _ = history_error(response)
+                errors[symbol] = detail
+                progress(f"{label}: FAILED - {detail}.")
                 continue
             grouped[symbol] = [Candle(datetime.fromtimestamp(c[0], IST),
                                       *(float(x) for x in c[1:5]))
                                for c in response["candles"]]
             progress(f"{label}: received {len(grouped[symbol])} candles "
                      f"({time.monotonic() - request_started:.1f}s).")
+        except HistoryRateLimit as exc:
+            errors[symbol] = str(exc)
+            for remaining in symbols[index:]:
+                errors[remaining] = "Not fetched: scan stopped after repeated FYERS rate-limit responses"
+            progress(f"{label}: {exc}. Stopping requests; "
+                     f"{len(symbols) - index} remaining symbols not fetched.")
+            break
         except Exception:
             errors[symbol] = "Could not fetch or parse FYERS candles"
             progress(f"{label}: FAILED - could not fetch or parse candles.")

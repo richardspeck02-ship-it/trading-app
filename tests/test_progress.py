@@ -5,10 +5,42 @@ import json
 import unittest
 from unittest.mock import patch
 
-from scanner import fetch_fyers, main
+from scanner import fetch_fyers, history_error, history_with_backoff, main
 
 
 class ProgressTests(unittest.TestCase):
+    def test_error_diagnostics_are_safe_and_do_not_assume_rate_limits(self):
+        detail, limited = history_error({"s": "error", "code": -123, "message": "private-response"})
+        self.assertIn("FYERS code -123", detail)
+        self.assertNotIn("private", detail)
+        self.assertFalse(limited)
+        self.assertFalse(history_error({"s": "error", "code": 403})[1])
+        self.assertTrue(history_error({"s": "error", "code": 429})[1])
+
+    @patch("scanner.time.sleep")
+    def test_rate_limit_retries_then_recovers(self, sleep):
+        from unittest.mock import Mock
+        client = Mock()
+        client.history.side_effect = [{"s": "error", "code": 429},
+                                      {"s": "ok", "candles": []}]
+        with redirect_stderr(io.StringIO()):
+            result = history_with_backoff(client, {"symbol": "NSE:ABB-EQ"}, "stock")
+        self.assertEqual(result["s"], "ok")
+        self.assertEqual(client.history.call_count, 2)
+        sleep.assert_called_once_with(30)
+
+    @patch("scanner.time.sleep")
+    @patch("fyers_apiv3.fyersModel.FyersModel")
+    @patch.dict("os.environ", {"FYERS_CLIENT_ID": "private-client", "FYERS_ACCESS_TOKEN": "private-token"})
+    def test_persistent_rate_limit_stops_remaining_requests(self, model, sleep):
+        model.return_value.history.return_value = {"s": "error", "code": 429}
+        with redirect_stderr(io.StringIO()):
+            grouped, errors = fetch_fyers(["NSE:ABB-EQ", "NSE:ACC-EQ"], date(2026, 10, 30))
+        self.assertEqual(grouped, {})
+        self.assertEqual(model.return_value.history.call_count, 3)
+        self.assertIn("Not fetched", errors["NSE:ACC-EQ"])
+        self.assertEqual([c.args[0] for c in sleep.call_args_list], [30, 60, 0.5])
+
     @patch("scanner.time.sleep")
     @patch("fyers_apiv3.fyersModel.FyersModel")
     @patch.dict("os.environ", {"FYERS_CLIENT_ID": "private-client", "FYERS_ACCESS_TOKEN": "private-token"})
