@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Garv System · Live scanner</title>
+<style>
+:root{color-scheme:dark;font-family:system-ui,sans-serif;background:#0c1220;color:#e7edf7}body{max-width:1400px;margin:auto;padding:28px}h1{font-size:28px;margin:0}header{display:flex;justify-content:space-between;align-items:center;gap:20px;flex-wrap:wrap}p{color:#aebed4;line-height:1.6}a{color:#a9d6ff}button,select,input,.download{font:inherit;padding:10px 14px;border:1px solid #384864;border-radius:8px;background:#17243a;color:#eef5ff}.download{text-decoration:none;display:inline-block}section{margin:24px 0}.stats{display:flex;gap:16px;flex-wrap:wrap}.card{background:#142035;padding:18px 24px;border-radius:10px;min-width:160px}.card strong{display:block;font-size:28px}.card span{color:#aebed4}.notice{padding:15px 18px;background:#192b41;border-left:3px solid #69b9ff;line-height:1.6}.controls{display:flex;gap:12px;flex-wrap:wrap}table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}th,td{text-align:left;padding:14px 10px;border-bottom:1px solid #23324a}th{color:#aebed4;font-size:13px}td{font-size:14px}.match{color:#82e2bb}.stale{color:#f0bb6b}.scroll{overflow:auto}.empty{padding:30px;color:#aebed4}small{color:#aebed4}#health{color:#88d3fd}
+</style></head><body>
+<header><div><h1>Garv System</h1><p>Live opening-range scanner · NIFTY 500</p></div><div><strong id="health">Connecting to dashboard…</strong><br><small id="clock"></small></div></header>
+<div class="notice" id="notice" role="status">Waiting for scanner state.</div>
+<section class="stats"><div class="card"><strong id="confirmed">0</strong><span>Confirmed matches</span></div><div class="card"><strong id="candidate">0</strong><span>Provisional candidates</span></div><div class="card"><strong id="coverage">0 / 0</strong><span>Symbols with prices</span></div><div class="card"><strong id="verified">0 / 0</strong><span>Patterns confirmed or rejected</span></div></section>
+<p><strong>Rule:</strong> 09:20 and 09:25 five-minute candle highs ≤ the 09:15 high, and lows ≥ the 09:15 low. Wicks and equality count. Before 09:30 the pattern is still forming.</p>
+<section class="controls"><label>Show <select id="filter"><option value="candidates">Matches &amp; candidates</option><option value="confirmed">Confirmed matches only</option><option value="all">All stocks</option></select></label><input id="search" type="search" aria-label="Search stock symbol" placeholder="Search stock symbol"><a class="download" href="/matches.csv">Download confirmed CSV</a><a class="download" href="/watchlist.txt">Download symbol list</a></section>
+<div class="scroll"><table><thead><tr><th>STOCK</th><th>LAST PRICE</th><th>PATTERN</th><th>FIRST HIGH</th><th>FIRST LOW</th><th>PRICE UPDATED (IST)</th><th>FEED</th></tr></thead><tbody id="rows"></tbody></table></div>
+<div id="empty" class="empty">Waiting for data.</div>
+<p><small>Prices refresh on this page every second. Updates older than 20 seconds are marked stale (which may also happen in an inactive stock). Stream-built candles are provisional; only FYERS-history-confirmed matches are exported. A candidate may disappear after confirmation. Reconciliation of the full universe runs in the background at a paced rate. Late starts and missing ticks can delay or miss provisional candidates until reconciliation. No orders are placed. Export files are for reference; FYERS watchlist import compatibility has not been verified.</small></p>
+<script>
+let latest=null;
+const byId=id=>document.getElementById(id);
+const fmt=x=>x==null?'—':Number(x).toFixed(2);
+const ist=value=>value?new Date(value).toLocaleTimeString('en-IN',{timeZone:'Asia/Kolkata',hour12:false}):'—';
+function render(){if(!latest)return;const s=latest;
+byId('health').textContent=(s.demo?'DEMO · ':'')+s.feed;
+byId('clock').textContent=s.session+' · '+ist(s.time)+' IST';
+byId('notice').textContent=s.notice;
+byId('confirmed').textContent=s.confirmed;
+byId('candidate').textContent=s.rows.filter(r=>r.status.includes('provisional')&&!r.status.startsWith('Outside')).length;
+byId('coverage').textContent=s.seen+' / '+s.total;
+byId('verified').textContent=s.verified+' / '+s.total;
+const mode=byId('filter').value, query=byId('search').value.toUpperCase();
+let rows=s.rows.filter(r=>r.symbol.includes(query)).filter(r=>mode==='all'||r.status==='Confirmed match'||(mode==='candidates'&&r.status.includes('provisional')&&!r.status.startsWith('Outside')));
+rows.sort((a,b)=>(a.status==='Confirmed match'?0:1)-(b.status==='Confirmed match'?0:1)||a.symbol.localeCompare(b.symbol));
+const fragment=document.createDocumentFragment();
+for(const r of rows){const tr=document.createElement('tr');if(r.status==='Confirmed match')tr.className='match';
+for(const text of [r.symbol,fmt(r.price),r.status,fmt(r.levels?.first_high),fmt(r.levels?.first_low),ist(r.updated),r.stale?'Stale / no price':'Recent']){const td=document.createElement('td');td.textContent=text;tr.appendChild(td);}if(r.error)tr.title=r.error;fragment.appendChild(tr);}
+byId('rows').replaceChildren(fragment);byId('empty').hidden=rows.length>0;
+byId('empty').textContent='No stocks in this view yet. Choose “All stocks” to inspect coverage and errors.';
+}
+async function poll(){try{const response=await fetch('/api/state',{cache:'no-store'});if(!response.ok)throw Error();latest=await response.json();render();}catch{byId('health').textContent='Dashboard disconnected';byId('notice').textContent='Cannot reach the local scanner. Prices on this page are no longer updating. Check PowerShell.';}finally{setTimeout(poll,1000);}}
+byId('filter').addEventListener('change',render);byId('search').addEventListener('input',render);poll();
+</script></body></html>

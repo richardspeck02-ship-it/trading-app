@@ -39,6 +39,71 @@ NIFTY 500 constituent list in a text file, one FYERS symbol per line, such as
 checks every symbol supplied but cannot establish index membership. Use date-appropriate membership
 for historical sessions.
 
+## Live browser scanner (read-only)
+
+Update the project and install the streaming SDK compatibility dependency:
+
+```powershell
+git pull
+.\.venv312\Scripts\python.exe -m pip install -r requirements.txt
+```
+
+Try the browser interface now with synthetic prices (no FYERS login required):
+
+```powershell
+.\.venv312\Scripts\python.exe live_app.py --demo
+```
+
+For a real session, stop demo mode with Ctrl+C, then run before **09:15 IST** on a
+trading day:
+
+```powershell
+.\.venv312\Scripts\python.exe login.py --live --symbols .\nifty500.txt
+```
+
+Complete the normal FYERS login. The dashboard opens at `http://127.0.0.1:8765`
+on your Windows PC. Keep PowerShell open. No trading app or order-placement
+permission is needed. There is no execution code in this feature.
+
+The app subscribes using FYERS' official `FyersDataSocket` with `SymbolUpdate`,
+in batches of 100. The pinned SDK's subscription implementation supports up to
+5,000 symbols, but actual account access and successful subscription of the
+uploaded 501 symbols still require validation in a market session. The page shows
+how many symbols have actually sent prices, not just how many were requested.
+
+- **Prices:** streamed from FYERS; the page polls the local server once per second.
+- **Provisional patterns:** built from prices that have a valid last-trade
+  timestamp, using the first three 5-minute windows. Ticks may be incomplete,
+  coalesced, late, or missed during disconnects; these are previews, not official OHLC.
+- **Confirmed matches:** after 09:30:03 IST, one paced worker requests the official
+  opening candles, prioritizing streaming candidates. It then reconciles the rest
+  of the universe to find matches that missing ticks may have hidden. One request
+  finishes before the worker waits at least one second before the next. This is a
+  conservative pacing choice, not verification of current FYERS quotas. There is
+  no guarantee every stock is confirmed by 09:35.
+- **Missing/late data:** late starts need historical backfill. Errors and incomplete
+  candles are shown explicitly; choose “All stocks” to inspect them. A rate-limit
+  response stops confirmation requests rather than hammering the API. Streaming
+  previews remain separate. Restart later to retry failed confirmations.
+- **Exports:** browser buttons download confirmed matches as CSV or FYERS-style
+  symbol text. Unconfirmed, rejected, and incomplete stocks are excluded. This is
+  a custom reference export; compatibility with FYERS' watchlist-import format is
+  unverified. It does not modify a FYERS account watchlist.
+
+Stream-built candidates can change on confirmation. After confirmation, the
+opening pattern is fixed for the session while prices continue updating. Prices
+without updates for 20 seconds are marked stale (including inactive stocks).
+The app handles only the current session; restart for a new trading date.
+Weekends/holidays do not produce a normal live session. Demo data is clearly
+labelled. Automated local tests and the synthetic dashboard can run without
+broker access; real-market streaming remains unverified until an authenticated
+market-session run. SDK diagnostic logs may contain market/account details;
+do not share those logs or commit them.
+
+`setuptools==80.9.0` retains `pkg_resources`, which the pinned FYERS streaming SDK
+imports. Newer releases that remove it cannot be substituted without updating
+the SDK integration. Its upstream deprecation warning is expected.
+
 ```sh
 .venv/bin/python scanner.py --fyers --symbols /path/to/nifty500.txt --date YYYY-MM-DD
 ```

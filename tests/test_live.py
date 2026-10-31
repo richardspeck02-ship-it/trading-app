@@ -1,0 +1,116 @@
+from contextlib import redirect_stderr
+from datetime import date, datetime, time as daytime
+import io
+import json
+import unittest
+from unittest.mock import Mock, patch
+
+from live_app import LiveState, demo_state, verify_worker
+from scanner import Candle, IST
+
+
+class LiveTests(unittest.TestCase):
+    session = date(2026, 10, 30)
+
+    def setUp(self):
+        self.state = LiveState(["NSE:ABB-EQ", "NSE:ACC-EQ"], self.session)
+
+    def tick(self, minute, second, price):
+        stamp = datetime.combine(self.session, daytime(9, minute, second), IST)
+        self.state.tick({"symbol": "NSE:ABB-EQ", "ltp": price, "last_traded_time": stamp.timestamp()}, stamp)
+
+    def candles(self, outside=False):
+        return [Candle(datetime.combine(self.session, daytime(9, minute), IST), 100, high, low, 100)
+                for minute, high, low in ((15, 110, 90), (20, 111 if outside else 110, 95), (25, 108, 90))]
+
+    def test_inclusive_candidate_is_never_exported_before_confirmation(self):
+        for minute in (15, 20, 25):
+            self.tick(minute, 0, 100)
+            self.tick(minute, 1, 110)
+            self.tick(minute, 2, 90)
+        snapshot = self.state.snapshot(datetime(2026, 10, 30, 9, 30, tzinfo=IST))
+        self.assertEqual(snapshot["rows"][0]["status"], "Candidate (provisional)")
+        self.assertEqual(self.state.export("txt"), b"")
+
+    def test_history_can_reject_stream_candidate(self):
+        self.state.apply_history("NSE:ABB-EQ", self.candles(True), datetime(2026, 10, 30, 9, 31, tzinfo=IST))
+        self.assertEqual(self.state.snapshot()["rows"][0]["status"], "Confirmed outside range")
+        self.assertEqual(self.state.export("txt"), b"")
+
+    def test_only_confirmed_matches_export(self):
+        self.state.apply_history("NSE:ABB-EQ", self.candles(), datetime(2026, 10, 30, 9, 31, tzinfo=IST))
+        self.assertEqual(self.state.export("txt"), b"NSE:ABB-EQ\n")
+        self.assertIn("NSE:ABB-EQ", self.state.export("csv").decode("utf-8-sig"))
+        self.assertNotIn("NSE:ACC-EQ", self.state.export("csv").decode("utf-8-sig"))
+
+    def test_prices_without_trade_timestamps_do_not_build_candles(self):
+        self.state.tick({"symbol": "NSE:ABB-EQ", "ltp": 100}, datetime(2026, 10, 30, 9, 15, tzinfo=IST))
+        self.assertEqual(self.state.records["NSE:ABB-EQ"]["bars"], {})
+        self.assertEqual(self.state.snapshot()["seen"], 1)
+
+    def test_invalid_ticks_and_old_sessions_do_not_build_candles(self):
+        for message in (None, {"symbol": "UNKNOWN", "ltp": 1},
+                        {"symbol": "NSE:ABB-EQ", "ltp": float("nan")},
+                        {"symbol": "NSE:ABB-EQ", "ltp": 100, "last_traded_time": "bad"}):
+            self.state.tick(message)
+        self.assertEqual(self.state.records["NSE:ABB-EQ"]["bars"], {})
+
+    def test_missing_candles_are_not_exported(self):
+        self.state.apply_history("NSE:ABB-EQ", self.candles()[:2], datetime(2026, 10, 30, 9, 31, tzinfo=IST))
+        self.assertEqual(self.state.snapshot()["rows"][0]["status"], "Incomplete historical candles")
+        self.assertEqual(self.state.export("txt"), b"")
+
+    def test_stale_prices_and_json_serialization(self):
+        self.tick(15, 0, 100)
+        data = self.state.snapshot(datetime(2026, 10, 30, 9, 16, tzinfo=IST))
+        self.assertTrue(data["rows"][0]["stale"])
+        json.dumps(data, allow_nan=False)
+
+    def test_out_of_order_trade_cannot_replace_newer_price(self):
+        self.tick(20, 0, 105)
+        self.tick(15, 0, 100)
+        self.assertEqual(self.state.records["NSE:ABB-EQ"]["price"], 105)
+
+    @patch("live_app.datetime")
+    @patch("live_app.requests.get")
+    def test_confirmation_prioritizes_streaming_candidates(self, request, clock):
+        now = datetime(2026, 10, 30, 9, 31, tzinfo=IST)
+        clock.now.return_value = now
+        clock.combine = datetime.combine
+        clock.fromtimestamp = datetime.fromtimestamp
+        self.state.records["NSE:ACC-EQ"]["bars"] = {0: [100, 110, 90, 100],
+                                                    1: [100, 105, 95, 100],
+                                                    2: [100, 105, 95, 100]}
+        response = request.return_value.__enter__.return_value
+        response.status_code = 200
+        response.json.return_value = {"s": "ok", "candles": [
+            [c.timestamp.timestamp(), c.open, c.high, c.low, c.close] for c in self.candles()]}
+        stop = Mock()
+        stop.wait.side_effect = [False, True]
+        with redirect_stderr(io.StringIO()):
+            verify_worker(self.state, stop, "private-client", "private-token")
+        self.assertEqual(request.call_args.kwargs["params"]["symbol"], "NSE:ACC-EQ")
+        self.assertEqual(self.state.official["NSE:ACC-EQ"]["status"], "match")
+        self.assertNotIn("NSE:ABB-EQ", self.state.official)
+
+    @patch("live_app.datetime")
+    @patch("live_app.requests.get")
+    def test_verification_rate_limit_stops_without_publishing_match(self, request, clock):
+        clock.now.return_value = datetime(2026, 10, 30, 9, 31, tzinfo=IST)
+        clock.combine = datetime.combine
+        request.return_value.__enter__.return_value.status_code = 429
+        request.return_value.__enter__.return_value.json.return_value = {"s": "error", "code": 429, "message": "private"}
+        stop = Mock()
+        stop.wait.return_value = False
+        with redirect_stderr(io.StringIO()):
+            verify_worker(self.state, stop, "private-client", "private-token")
+        self.assertTrue(self.state.history_paused)
+        self.assertEqual(request.call_count, 1)
+        self.assertEqual(self.state.export("txt"), b"")
+        self.assertNotIn("private", json.dumps(self.state.snapshot()))
+
+    def test_demo_is_explicitly_labelled(self):
+        data = demo_state().snapshot()
+        self.assertTrue(data["demo"])
+        self.assertIn("DEMO", data["feed"])
+        self.assertEqual(data["confirmed"], 1)

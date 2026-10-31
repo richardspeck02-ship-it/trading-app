@@ -161,9 +161,14 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--symbols", help="After login, scan the supplied FYERS symbol file")
     parser.add_argument("--date", type=date.fromisoformat, help="Scan session YYYY-MM-DD")
+    parser.add_argument("--live", action="store_true", help="Open a read-only live browser scanner for today's session")
     parser.add_argument("--output-dir", default="results", help="Save scan files under this directory (default: results)")
     args = parser.parse_args(argv)
-    if bool(args.symbols) != bool(args.date):
+    if args.live and args.date:
+        parser.error("--live uses today's market session; omit --date")
+    if args.live and not args.symbols:
+        args.symbols = "nifty500.txt"
+    if not args.live and bool(args.symbols) != bool(args.date):
         parser.error("Provide --symbols and --date together, or omit both to test login")
     if args.symbols and not Path(args.symbols).is_file():
         parser.error("Symbol file not found")
@@ -179,11 +184,13 @@ def main(argv=None):
             child_env.pop("FYERS_APP_SECRET", None)
             child_env["FYERS_CLIENT_ID"] = client_id
             child_env["FYERS_ACCESS_TOKEN"] = token
-            return subprocess.run([
-                sys.executable, str(Path(__file__).with_name("scanner.py")),
-                "--fyers", "--symbols", args.symbols, "--date", args.date.isoformat(),
-                "--output-dir", args.output_dir,
-            ], env=child_env, check=False).returncode
+            if args.live:
+                command = [sys.executable, str(Path(__file__).with_name("live_app.py")), "--symbols", args.symbols]
+            else:
+                command = [sys.executable, str(Path(__file__).with_name("scanner.py")),
+                           "--fyers", "--symbols", args.symbols, "--date", args.date.isoformat(),
+                           "--output-dir", args.output_dir]
+            return subprocess.run(command, env=child_env, check=False).returncode
         print("To login and scan, run again with --symbols <file> --date YYYY-MM-DD.")
         return 0
     except (LoginError, EOFError) as exc:
