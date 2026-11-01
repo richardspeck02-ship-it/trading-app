@@ -15,8 +15,8 @@ import webbrowser
 
 import requests
 
-from scanner import (Candle, INTERVAL, IST, OPENING_END, SESSION_INDEX, daily_request, evaluate, history_error,
-                     opening_request, parse_history, previous_candle, previous_session, progress)
+from scanner import (Candle, INTERVAL, IST, OPENING_END, evaluate, history_error,
+                     opening_request, parse_history, progress)
 from universe import load_live_symbols, validate_live_symbols
 
 
@@ -30,8 +30,6 @@ class LiveState:
         self.records = {s: {"symbol": s, "price": None, "updated": None, "trade_time": None, "bars": {}}
                         for s in symbols}
         self.official = {}
-        self.previous_session = None
-        self.previous = {}
         self.feed = "Starting"
         self.notice = "Start before 09:15 IST for opening-candle previews. Stream-built patterns are provisional."
         self.started = datetime.now(IST)
@@ -84,11 +82,6 @@ class LiveState:
         if now < datetime.combine(self.session, daytime(9, 30), IST) or not all(i in bars for i in (0, 1)):
             return "Waiting for opening candles"
         first = bars[0]
-        prior = self.previous.get(record["symbol"])
-        if prior is None:
-            return "Waiting for previous-session range"
-        if not (first[3] > prior.high or first[3] < prior.low):
-            return "No opening breakout (provisional)"
         second = bars[1]
         if second[2] < first[2] or second[1] > first[1]:
             return "Outside range (provisional)"
@@ -96,7 +89,7 @@ class LiveState:
                 else "Inside so far (2nd forming, provisional)")
 
     def apply_history(self, symbol, candles, now):
-        status, levels = evaluate(candles, self.session, now, self.previous_session)
+        status, levels = evaluate(candles, self.session, now)
         with self.lock:
             self.official[symbol] = {"status": status, "levels": levels}
 
@@ -117,17 +110,12 @@ class LiveState:
                 if levels is None and 0 in record["bars"]:
                     levels = {"first_high": record["bars"][0][1], "first_low": record["bars"][0][2],
                               "first_close": record["bars"][0][3]}
-                    if symbol in self.previous:
-                        levels.update(previous_high=self.previous[symbol].high,
-                                      previous_low=self.previous[symbol].low,
-                                      previous_session=self.previous_session.isoformat() if self.previous_session else None)
                 stale = record["updated"] is None or (now - datetime.fromisoformat(record["updated"])).total_seconds() > 20
                 rows.append({"symbol": symbol, "price": record["price"], "updated": record["updated"],
                              "stale": stale, "status": status, "levels": levels,
                              "error": official.get("error") if official else record.get("subscription_error")})
             return {"session": self.session.isoformat(), "time": now.isoformat(), "demo": self.demo,
-                    "interval": INTERVAL, "candle_count": 2,
-                    "previous_session": self.previous_session.isoformat() if self.previous_session else None,
+                    "interval": INTERVAL, "candle_count": 2, "pattern": "inside_only",
                     "feed": self.feed, "notice": self.notice, "universe": self.universe, "total": len(rows),
                     "seen": sum(r["price"] is not None for r in rows),
                     "verified": sum(o["status"] in ("match", "no_match") for o in self.official.values()),
@@ -144,10 +132,10 @@ class LiveState:
         writer = csv.writer(stream)
         writer.writerow(["session", "symbol", "last_price", "price_updated", "first_high", "first_low",
                          "second_high", "second_low",
-                         "first_close", "previous_session", "previous_high", "previous_low"])
+                         "first_close"])
         for r in rows:
             writer.writerow([self.session.isoformat(), r["symbol"], r["price"], r["updated"],
-                             *(r["levels"].get(k) for k in ("first_high", "first_low", "second_high", "second_low", "first_close", "previous_session", "previous_high", "previous_low"))])
+                             *(r["levels"].get(k) for k in ("first_high", "first_low", "second_high", "second_low", "first_close"))])
         return stream.getvalue().encode("utf-8-sig")
 
 
@@ -190,6 +178,8 @@ def verify_worker(state, stop, client_id, token):
             with state.lock:
                 state.notice = "Session ended. Restart the app for the new trading date."
             return
+        if now < datetime.combine(state.session, daytime(9, 45, 3), IST):
+            continue
         with state.lock:
             remaining = [s for s in state.symbols if s not in state.official]
             if not remaining:
@@ -197,28 +187,9 @@ def verify_worker(state, stop, client_id, token):
             remaining.sort(key=lambda s: "Candidate" not in state.preview(state.records[s], now))
             symbol = remaining[0]
         try:
-            # Each iteration performs at most one request; stop.wait(1) above
-            # keeps daily-reference and opening requests under the same pacing.
-            if state.previous_session is None:
-                request = daily_request(SESSION_INDEX, state.session)
-                phase = "reference"
-            elif symbol not in state.previous:
-                request = daily_request(symbol, state.session, state.previous_session)
-                phase = "daily"
-            elif now < datetime.combine(state.session, daytime(9, 45, 3), IST):
-                # Load all previous ranges before waiting for opening bars.
-                pending = [s for s in remaining if s not in state.previous]
-                if not pending:
-                    continue
-                symbol = pending[0]
-                request = daily_request(symbol, state.session, state.previous_session)
-                phase = "daily"
-            else:
-                request = opening_request(symbol, state.session)
-                phase = "opening"
-            progress(f"Checking {phase} candles: {symbol}")
+            progress(f"Checking opening candles: {symbol}")
             with requests.get("https://api-t1.fyers.in/data/history",
-                              params=request,
+                              params=opening_request(symbol, state.session),
                               headers={"Authorization": f"{client_id}:{token}", "Content-Type": "application/json", "version": "3"},
                               timeout=15, allow_redirects=False) as response:
                 try:
@@ -234,30 +205,12 @@ def verify_worker(state, stop, client_id, token):
                     return
                 if response.status_code != 200:
                     raise ValueError(detail)
-                candles = parse_history(data, INTERVAL if phase == "opening" else "D")
-                if phase == "reference":
-                    previous = previous_session(candles, state.session)
-                    if previous is None:
-                        raise ValueError("Previous exchange session unavailable")
-                    with state.lock:
-                        state.previous_session = previous
-                elif phase == "daily":
-                    prior = previous_candle(candles, state.previous_session)
-                    with state.lock:
-                        if prior is None:
-                            state.official[symbol] = {"status": "incomplete", "error": "Previous-session daily candle missing"}
-                        else:
-                            state.previous[symbol] = prior
-                else:
-                    state.apply_history(symbol, [state.previous[symbol]] + candles, now)
+                candles = parse_history(data, INTERVAL)
+                state.apply_history(symbol, candles, now)
         except Exception:
             with state.lock:
-                if state.previous_session is None:
-                    state.notice = "Previous exchange session could not be verified. No matches exported; restart to retry."
-                    for item in state.symbols:
-                        state.official[item] = {"status": "error", "error": "Previous exchange session unavailable"}
-                    return
-                state.official[symbol] = {"status": "error", "error": "Could not verify opening or previous-session candles; no match exported."}
+                state.official[symbol] = {"status": "error", "error": "Could not verify opening candles; no match exported."}
+        # One worker; the next request starts at least a second after completion.
 
 
 def connect_feed(state, stop, client_id, token):
@@ -352,10 +305,7 @@ def demo_state():
     state.notice = "DEMO ONLY. Real scans need FYERS login and a trading session."
     candles = [Candle(datetime.combine(today, daytime(9, minute), IST), 100, high, low, 100)
                for minute, high, low in ((15, 110, 90), (30, 110, 90))]
-    state.previous_session = today - timedelta(days=1)
-    prior = Candle(datetime.combine(state.previous_session, daytime(0), IST), 95, 99, 90, 95, interval="D")
-    state.previous["NSE:DEMO-EQ"] = prior
-    state.apply_history("NSE:DEMO-EQ", [prior] + candles, datetime.combine(today, daytime(9, 46), IST))
+    state.apply_history("NSE:DEMO-EQ", candles, datetime.combine(today, daytime(9, 46), IST))
     state.records["NSE:DEMO-EQ"].update(price=102.5, updated=datetime.now(IST).isoformat())
     return state
 

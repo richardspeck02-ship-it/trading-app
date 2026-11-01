@@ -1,15 +1,10 @@
 # Opening-range stock scanner
 
-A match requires **both**:
-
-- The first fifteen-minute candle's **close** is strictly above the previous trading
-  session's daily high **or** strictly below its daily low. Equal prices fail;
-  a wick beyond the previous range is insufficient.
-- The second fifteen-minute candle remains inside the first candle,
-  including equal highs/lows (`[]`).
-
-Candle windows are 09:15–09:30 and 09:30–09:45 Asia/Kolkata. Wicks count. This scanner reads data
-and does not place orders.
+The only pattern rule is that the **second fifteen-minute candle stays inside
+(or equal to) the first candle's high and low**, including wicks. Candle windows
+are 09:15–09:30 and 09:30–09:45 Asia/Kolkata. There is no condition on the first
+candle's close or the previous session's range. No third candle is required.
+This scanner reads data and does not place orders.
 
 ## Run offline
 
@@ -21,41 +16,28 @@ python scanner.py --csv examples/candles.csv --date 2026-10-30
 ```
 
 The example uses synthetic data: DEMO_MATCH qualifies and DEMO_REJECT does not.
-Fifteen-minute CSV timestamps must include a timezone and represent candle **opening** times.
-Results include matches and per-symbol status. Missing candles are incomplete,
-never non-matches. Exit status is nonzero for incomplete data or request errors.
-Requests before the session's 09:45 IST close are rejected. The previous
-exchange session is the latest daily `NSE:NIFTY50-INDEX` bar strictly before the
-requested date, fetched over a 30-calendar-day window. Actual daily bars skip
-weekends and exchange holidays and include special weekend sessions when present;
-we do not subtract one calendar day or assume every weekday trades. Each stock
-must have its own daily bar on that **exact** date; an older stock bar cannot
-substitute for missing data. Missing reference data causes an error; missing stock
-daily/opening candles are incomplete and never exported as matches. The selected
-session still needs the documented 09:15/09:30 bars; a closed day or an
-evening-only special session cannot supply those opening candles. If data publication
-is delayed, rerun after 09:45.
+Fifteen-minute CSV timestamps must include a timezone and represent candle
+**opening** times. Requests before 09:45 IST on the session date are rejected.
+Missing either opening candle is incomplete, never a non-match; incomplete data
+or request errors return a nonzero exit status. Closed days (weekends and exchange
+holidays) do not supply these opening bars and therefore cannot produce matches.
+Special sessions need the same 09:15/09:30 starts to qualify. If publication is
+delayed, rerun after 09:45.
 
-### Offline CSV daily reference
+### Offline CSV format
 
 CSV columns are `symbol,timestamp,open,high,low,close,interval`. Use `15` for
-fifteen-minute bars and `D` for **full-session daily OHLC** (never a partial intraday
-range). Timestamps must include a timezone; daily rows are identified by their
-Asia/Kolkata date. Include complete daily `NSE:NIFTY50-INDEX` history for the
-30-calendar-day lookback and a daily row per stock for the latest index session.
-The bundled synthetic example shows this format. The scanner trusts the supplied
-index history's completeness; a truncated reference could select an older date.
-Older five-minute CSVs cannot be used for this fifteen-minute scan: fetch fresh
-fifteen-minute history instead. Five-minute rows (including legacy rows with no
-`interval` column, which default to `5`) are not treated as fifteen-minute bars.
-Missing either fifteen-minute bar makes a stock incomplete. No third candle is
-required or evaluated.
+fifteen-minute bars. No daily stock or index reference data is needed. Daily (`D`)
+rows in older saved files are ignored. Five-minute rows (including legacy rows
+with no `interval` column, which default to `5`) are not treated as fifteen-minute
+bars; fetch fresh fifteen-minute history instead.
 
-New reports identify `interval: "15"` and `candle_count: 2`. Saved `candles.csv`
-files retain daily index/stock bars and intervals for offline reruns. Reports and match CSV exports include `first_close`, `previous_session`,
-`previous_high`, and `previous_low` as evidence for the filter. Reading an old
-`report.json` prints its saved results without re-evaluating the new rule; rerun
-with the required daily data to apply this filter to an old scan.
+New reports identify `interval: "15"`, `candle_count: 2` and `pattern: "inside_only"`.
+Saved `candles.csv` files retain opening bars and intervals for offline reruns.
+Reports and match CSV exports include the first/second highs and lows and the
+first close for inspection; the close is not a filter. Reading an old
+`report.json` only prints its saved results, so rerun the candle data to evaluate
+an old scan using the current rule.
 
 ## Connect FYERS
 
@@ -109,13 +91,11 @@ Other active subscriptions may consume part of the account-wide allowance.
 The page shows the selected universe and actual received-price coverage.
 
 - **Prices:** streamed from FYERS; the page polls the local server once per second.
-- **Provisional patterns:** require the downloaded previous-session range and the
-  strict first-candle close breakout as well as inside candles. Built from prices
+- **Provisional patterns:** apply only the inside-candle rule. Built from prices
   that have a valid last-trade
   timestamp, using the first two 15-minute windows. Ticks may be incomplete,
   coalesced, late, or missed during disconnects; these are previews, not official OHLC.
-- **Confirmed matches:** one paced worker first loads the exchange session reference
-  and stock daily ranges. After 09:45:03 IST it requests the official
+- **Confirmed matches:** after 09:45:03 IST, one paced worker requests the official
   opening candles, prioritizing streaming candidates. It then reconciles the rest
   of the universe to find matches that missing ticks may have hidden. One request
   finishes before the worker waits at least one second before the next. This is a
@@ -236,10 +216,8 @@ SDK distributed on [PyPI](https://pypi.org/project/fyers-apiv3/3.1.7/).
 
 Requests now use epoch bounds from 09:15:00 through 09:44:59 IST, requesting only
 the fifteen-minute candle starts at 09:15 and 09:30. Any extra candles returned are filtered
-out. This requires one daily index-reference request and up to two requests per stock
-(previous daily bar and opening bars), plus any rate-limit retries.
-The strict first-close breakout and inclusive inside-candle rules are both applied
-to historical sessions. This is a
+out. This requires one opening-history request per stock, plus any rate-limit retries.
+The inclusive inside-candle rule applies to historical sessions. This is a
 historical pattern scan; returns or profit cannot be calculated without entry,
 exit, sizing, and execution rules.
 

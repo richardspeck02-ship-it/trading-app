@@ -48,13 +48,12 @@ class ReportTests(unittest.TestCase):
     @patch.dict("os.environ", {"FYERS_CLIENT_ID": "test", "FYERS_ACCESS_TOKEN": "test"})
     def test_extra_returned_candles_are_excluded(self, model, sleep):
         epoch = int(datetime(2026, 10, 30, 9, 15, tzinfo=IST).timestamp())
-        daily = {"s": "ok", "candles": [[epoch - 86400, 95, 99, 90, 95]]}
-        model.return_value.history.side_effect = [daily, daily, {"s": "ok", "candles": [
-            [epoch + offset, 100, 110, 90, 105] for offset in (0, 900, 1800)]}]
+        model.return_value.history.return_value = {"s": "ok", "candles": [
+            [epoch + offset, 100, 110, 90, 105] for offset in (0, 900, 1800)]}
         with redirect_stderr(io.StringIO()):
             grouped, errors = fetch_fyers(["NSE:ABB-EQ"], date(2026, 10, 30))
-        self.assertEqual(len(grouped["NSE:ABB-EQ"]), 3)
-        self.assertEqual(grouped["NSE:ABB-EQ"][0].interval, "D")
+        self.assertEqual(len(grouped["NSE:ABB-EQ"]), 2)
+        self.assertEqual(grouped["NSE:ABB-EQ"][0].interval, "15")
         self.assertFalse(errors)
 
     def test_saved_offline_results_and_watchlist_match_inclusive_rule(self):

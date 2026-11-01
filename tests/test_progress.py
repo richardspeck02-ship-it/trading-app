@@ -38,15 +38,14 @@ class ProgressTests(unittest.TestCase):
             grouped, errors = fetch_fyers(["NSE:ABB-EQ", "NSE:ACC-EQ"], date(2026, 10, 30))
         self.assertEqual(grouped, {})
         self.assertEqual(model.return_value.history.call_count, 3)
-        self.assertIn("previous exchange session", errors["NSE:ACC-EQ"])
-        self.assertEqual([c.args[0] for c in sleep.call_args_list], [30, 60])
+        self.assertIn("Not fetched", errors["NSE:ACC-EQ"])
+        self.assertEqual([c.args[0] for c in sleep.call_args_list], [30, 60, 0.5])
 
     @patch("scanner.time.sleep")
     @patch("fyers_apiv3.fyersModel.FyersModel")
     @patch.dict("os.environ", {"FYERS_CLIENT_ID": "private-client", "FYERS_ACCESS_TOKEN": "private-token"})
     def test_progress_for_success_rejection_and_exception_without_secrets(self, model, sleep):
-        daily = {"s": "ok", "candles": [[1793245500, 95, 99, 90, 95]]}
-        model.return_value.history.side_effect = [daily, daily,
+        model.return_value.history.side_effect = [
             {"s": "ok", "candles": [[1793331900, 100, 110, 90, 105, 12]]},
             {"s": "error", "message": "private-response", "access_token": "private-token"},
             RuntimeError("private-exception"),
@@ -54,7 +53,7 @@ class ProgressTests(unittest.TestCase):
         output = io.StringIO()
         with redirect_stderr(output):
             grouped, errors = fetch_fyers(["NSE:ABB-EQ", "NSE:ACC-EQ", "NSE:HFCL-BE"], date(2026, 10, 30))
-        self.assertEqual(list(grouped), ["NSE:NIFTY50-INDEX", "NSE:ABB-EQ"])
+        self.assertEqual(list(grouped), ["NSE:ABB-EQ"])
         self.assertEqual(len(errors), 2)
         log = output.getvalue()
         self.assertLess(log.index("fetching candles"), log.index("received 1 opening candles"))
