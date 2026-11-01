@@ -8,33 +8,34 @@
 <div class="notice" id="notice" role="status">Waiting for scanner state.</div>
 <details id="errors" hidden><summary>Recent stream errors</summary><ul id="error-list"></ul></details>
 <section class="stats"><div class="card"><strong id="confirmed">0</strong><span>Confirmed matches</span></div><div class="card"><strong id="candidate">0</strong><span>Provisional candidates</span></div><div class="card"><strong id="coverage">0 / 0</strong><span>Symbols with prices</span></div><div class="card"><strong id="verified">0 / 0</strong><span>Patterns confirmed or rejected</span></div></section>
-<p><strong>Rule:</strong> 09:20 and 09:25 five-minute candle highs ≤ the 09:15 high, and lows ≥ the 09:15 low. Wicks and equality count. Before 09:30 the pattern is still forming.</p>
+<p><strong>Rule:</strong> The 09:15 five-minute candle must close strictly above the previous trading session’s high or strictly below its low (equality fails). Then 09:20 and 09:25 five-minute candle highs ≤ the 09:15 high, and lows ≥ the 09:15 low. Wicks and equality count. Before 09:30 the pattern is still forming.</p>
 <section class="controls"><label>Show <select id="filter"><option value="candidates">Matches &amp; candidates</option><option value="confirmed">Confirmed matches only</option><option value="all">All stocks</option></select></label><input id="search" type="search" aria-label="Search stock symbol" placeholder="Search stock symbol"><a class="download" href="/matches.csv">Download confirmed CSV</a><a class="download" href="/watchlist.txt">Download symbol list</a></section>
-<div class="scroll"><table><thead><tr><th>STOCK</th><th>LAST PRICE</th><th>PATTERN</th><th>FIRST HIGH</th><th>FIRST LOW</th><th>PRICE UPDATED (IST)</th><th>FEED</th></tr></thead><tbody id="rows"></tbody></table></div>
+<div class="scroll"><table><thead><tr><th>STOCK</th><th>LAST PRICE</th><th>PATTERN</th><th>FIRST HIGH</th><th>FIRST LOW</th><th>FIRST CLOSE</th><th>PREVIOUS HIGH</th><th>PREVIOUS LOW</th><th>PRICE UPDATED (IST)</th><th>FEED</th></tr></thead><tbody id="rows"></tbody></table></div>
 <div id="empty" class="empty">Waiting for data.</div>
 <p><small>Prices refresh on this page every second. Updates older than 20 seconds are marked stale (which may also happen in an inactive stock). Stream-built candles are provisional; only FYERS-history-confirmed matches are exported. A candidate may disappear after confirmation. Reconciliation of the full universe runs in the background at a paced rate. Late starts and missing ticks can delay or miss provisional candidates until reconciliation. No orders are placed. Export files are for reference; FYERS watchlist import compatibility has not been verified.</small></p>
 <script>
 let latest=null;
 const byId=id=>document.getElementById(id);
 const fmt=x=>x==null?'—':Number(x).toFixed(2);
+const candidate=r=>r.status.startsWith('Candidate')||r.status.startsWith('Inside so far');
 const ist=value=>value?new Date(value).toLocaleTimeString('en-IN',{timeZone:'Asia/Kolkata',hour12:false}):'—';
 function render(){if(!latest)return;const s=latest;
 byId('universe').textContent='Live opening-range scanner · '+s.universe;
 byId('health').textContent=(s.demo?'DEMO · ':'')+s.feed;
-byId('clock').textContent=s.session+' · '+ist(s.time)+' IST';
+byId('clock').textContent=s.session+' · '+ist(s.time)+' IST'+(s.previous_session?' · Previous session: '+s.previous_session:'');
 byId('notice').textContent=s.notice;
 const errors=s.stream_errors||[];byId('errors').hidden=errors.length===0;
 const errorList=document.createDocumentFragment();for(const error of errors){const li=document.createElement('li');li.textContent=ist(error.time)+' IST · '+error.detail;errorList.appendChild(li);}byId('error-list').replaceChildren(errorList);
 byId('confirmed').textContent=s.confirmed;
-byId('candidate').textContent=s.rows.filter(r=>r.status.includes('provisional')&&!r.status.startsWith('Outside')).length;
+byId('candidate').textContent=s.rows.filter(candidate).length;
 byId('coverage').textContent=s.seen+' / '+s.total;
 byId('verified').textContent=s.verified+' / '+s.total;
 const mode=byId('filter').value, query=byId('search').value.toUpperCase();
-let rows=s.rows.filter(r=>r.symbol.includes(query)).filter(r=>mode==='all'||r.status==='Confirmed match'||(mode==='candidates'&&r.status.includes('provisional')&&!r.status.startsWith('Outside')));
+let rows=s.rows.filter(r=>r.symbol.includes(query)).filter(r=>mode==='all'||r.status==='Confirmed match'||(mode==='candidates'&&candidate(r)));
 rows.sort((a,b)=>(a.status==='Confirmed match'?0:1)-(b.status==='Confirmed match'?0:1)||a.symbol.localeCompare(b.symbol));
 const fragment=document.createDocumentFragment();
 for(const r of rows){const tr=document.createElement('tr');if(r.status==='Confirmed match')tr.className='match';
-for(const text of [r.symbol,fmt(r.price),r.status,fmt(r.levels?.first_high),fmt(r.levels?.first_low),ist(r.updated),r.stale?'Stale / no price':'Recent']){const td=document.createElement('td');td.textContent=text;tr.appendChild(td);}if(r.error)tr.title=r.error;fragment.appendChild(tr);}
+for(const text of [r.symbol,fmt(r.price),r.status,fmt(r.levels?.first_high),fmt(r.levels?.first_low),fmt(r.levels?.first_close),fmt(r.levels?.previous_high),fmt(r.levels?.previous_low),ist(r.updated),r.stale?'Stale / no price':'Recent']){const td=document.createElement('td');td.textContent=text;tr.appendChild(td);}if(r.error)tr.title=r.error;fragment.appendChild(tr);}
 byId('rows').replaceChildren(fragment);byId('empty').hidden=rows.length>0;
 byId('empty').textContent='No stocks in this view yet. Choose “All stocks” to inspect coverage and errors.';
 }

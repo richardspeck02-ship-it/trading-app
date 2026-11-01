@@ -14,13 +14,16 @@ class LiveTests(unittest.TestCase):
 
     def setUp(self):
         self.state = LiveState(["NSE:ABB-EQ", "NSE:ACC-EQ"], self.session)
+        self.state.previous_session = date(2026, 10, 29)
+        self.prior = Candle(datetime(2026, 10, 29, tzinfo=IST), 95, 99, 90, 95, "D")
+        self.state.previous = dict.fromkeys(self.state.symbols, self.prior)
 
     def tick(self, minute, second, price):
         stamp = datetime.combine(self.session, daytime(9, minute, second), IST)
         self.state.tick({"symbol": "NSE:ABB-EQ", "ltp": price, "last_traded_time": stamp.timestamp()}, stamp)
 
     def candles(self, outside=False):
-        return [Candle(datetime.combine(self.session, daytime(9, minute), IST), 100, high, low, 100)
+        return [self.prior] + [Candle(datetime.combine(self.session, daytime(9, minute), IST), 100, high, low, 100)
                 for minute, high, low in ((15, 110, 90), (20, 111 if outside else 110, 95), (25, 108, 90))]
 
     def test_inclusive_candidate_is_never_exported_before_confirmation(self):
@@ -28,13 +31,14 @@ class LiveTests(unittest.TestCase):
             self.tick(minute, 0, 100)
             self.tick(minute, 1, 110)
             self.tick(minute, 2, 90)
+            self.tick(minute, 3, 100)
         snapshot = self.state.snapshot(datetime(2026, 10, 30, 9, 30, tzinfo=IST))
         self.assertEqual(snapshot["rows"][0]["status"], "Candidate (provisional)")
         self.assertEqual(self.state.export("txt"), b"")
 
     def test_history_can_reject_stream_candidate(self):
         self.state.apply_history("NSE:ABB-EQ", self.candles(True), datetime(2026, 10, 30, 9, 31, tzinfo=IST))
-        self.assertEqual(self.state.snapshot()["rows"][0]["status"], "Confirmed outside range")
+        self.assertEqual(self.state.snapshot()["rows"][0]["status"], "Confirmed no match")
         self.assertEqual(self.state.export("txt"), b"")
 
     def test_only_confirmed_matches_export(self):
@@ -56,7 +60,7 @@ class LiveTests(unittest.TestCase):
         self.assertEqual(self.state.records["NSE:ABB-EQ"]["bars"], {})
 
     def test_missing_candles_are_not_exported(self):
-        self.state.apply_history("NSE:ABB-EQ", self.candles()[:2], datetime(2026, 10, 30, 9, 31, tzinfo=IST))
+        self.state.apply_history("NSE:ABB-EQ", self.candles()[:3], datetime(2026, 10, 30, 9, 31, tzinfo=IST))
         self.assertEqual(self.state.snapshot()["rows"][0]["status"], "Incomplete historical candles")
         self.assertEqual(self.state.export("txt"), b"")
 
@@ -84,7 +88,7 @@ class LiveTests(unittest.TestCase):
         response = request.return_value.__enter__.return_value
         response.status_code = 200
         response.json.return_value = {"s": "ok", "candles": [
-            [c.timestamp.timestamp(), c.open, c.high, c.low, c.close] for c in self.candles()]}
+            [c.timestamp.timestamp(), c.open, c.high, c.low, c.close] for c in self.candles()[1:]]}
         stop = Mock()
         stop.wait.side_effect = [False, True]
         with redirect_stderr(io.StringIO()):
