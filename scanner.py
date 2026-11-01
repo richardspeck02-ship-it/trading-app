@@ -1,4 +1,4 @@
-"""Scan the first three NSE five-minute candles. All times are Asia/Kolkata."""
+"""Scan the first two NSE fifteen-minute candles. All times are Asia/Kolkata."""
 
 import argparse
 import csv
@@ -15,7 +15,9 @@ from zoneinfo import ZoneInfo
 
 IST = ZoneInfo("Asia/Kolkata")
 SESSION_INDEX = "NSE:NIFTY50-INDEX"
-STARTS = (daytime(9, 15), daytime(9, 20), daytime(9, 25))
+INTERVAL = "15"
+STARTS = (daytime(9, 15), daytime(9, 30))
+OPENING_END = daytime(9, 45)
 
 
 def progress(message):
@@ -30,11 +32,11 @@ class Candle:
     high: float
     low: float
     close: float
-    interval: str = "5"
+    interval: str = INTERVAL
 
     def __post_init__(self):
-        if self.interval not in ("5", "D"):
-            raise ValueError("Candle interval must be 5 or D")
+        if self.interval not in ("5", INTERVAL, "D"):
+            raise ValueError("Candle interval must be 5, 15 or D")
         if self.timestamp.tzinfo is None or self.timestamp.utcoffset() is None:
             raise ValueError("Candle timestamps must include a timezone")
         if not all(math.isfinite(x) and x > 0 for x in
@@ -67,31 +69,30 @@ def evaluate(candles, session, now, previous=None):
     """Require the exact previous daily bar and a strict first-close breakout."""
     if now.tzinfo is None or now.utcoffset() is None:
         raise ValueError("Current time must include a timezone")
-    if now < datetime.combine(session, daytime(9, 30), IST):
+    if now < datetime.combine(session, OPENING_END, IST):
         return "pending", None
     selected = {}
     for candle in candles:
         local = candle.timestamp.astimezone(IST)
-        if candle.interval == "5" and local.date() == session and local.time() in STARTS:
+        if candle.interval == INTERVAL and local.date() == session and local.time() in STARTS:
             if local.time() in selected:
                 raise ValueError("Duplicate opening candle")
             selected[local.time()] = candle
-    if len(selected) != 3:
+    if len(selected) != 2:
         return "incomplete", None
-    first, second, third = (selected[t] for t in STARTS)
+    first, second = (selected[t] for t in STARTS)
     if previous is not None and not session - timedelta(days=30) <= previous < session:
         raise ValueError("Previous session must precede the scan within the reference window")
     prior = previous_candle(candles, previous)
     if prior is None:
         return "incomplete", None
     breakout = first.close > prior.high or first.close < prior.low
-    matches = breakout and all(c.low >= first.low and c.high <= first.high for c in (second, third))
+    matches = breakout and second.low >= first.low and second.high <= first.high
     return "match" if matches else "no_match", {
         "previous_session": previous.isoformat(), "previous_high": prior.high,
         "previous_low": prior.low, "first_close": first.close,
         "first_high": first.high, "first_low": first.low,
         "second_high": second.high, "second_low": second.low,
-        "third_high": third.high, "third_low": third.low,
     }
 
 
@@ -163,9 +164,9 @@ def history_with_backoff(client, data, label):
 
 def opening_request(symbol, session):
     start = datetime.combine(session, STARTS[0], IST)
-    # End before 09:30 so the 09:30 candle is not requested.
-    end = datetime.combine(session, daytime(9, 30), IST) - timedelta(seconds=1)
-    return {"symbol": symbol, "resolution": "5", "date_format": "0",
+    # End before 09:45 so only the 09:15 and 09:30 starts are requested.
+    end = datetime.combine(session, OPENING_END, IST) - timedelta(seconds=1)
+    return {"symbol": symbol, "resolution": INTERVAL, "date_format": "0",
             "range_from": str(int(start.timestamp())),
             "range_to": str(int(end.timestamp())), "cont_flag": "1"}
 
@@ -209,7 +210,7 @@ def fetch_fyers(symbols, session):
     time.sleep(0.5)
     started = time.monotonic()
     progress(f"Scanning {len(symbols)} symbols for {session.isoformat()}; "
-             "only 09:15, 09:20 and 09:25 IST five-minute candles.")
+             "only 09:15 and 09:30 IST fifteen-minute candles.")
     for index, symbol in enumerate(symbols, 1):
         request_started = time.monotonic()
         label = f"[{index}/{len(symbols)}] {symbol}"
@@ -250,7 +251,7 @@ def fetch_fyers(symbols, session):
             progress(f"Completed {index}/{len(symbols)}; fetched {len(grouped) - 1}; "
                      f"errors {len(errors)}; elapsed {time.monotonic() - started:.0f}s.")
             time.sleep(0.5)
-    progress("Fetching complete. Checking the opening three candles...")
+    progress("Fetching complete. Checking the opening two fifteen-minute candles...")
     return grouped, errors
 
 
@@ -271,7 +272,7 @@ def save_report(directory, report, grouped):
     (folder / "failed-symbols.txt").write_text("".join(s + "\n" for s in retry), encoding="utf-8")
     with (folder / "matches.csv").open("w", newline="", encoding="utf-8") as stream:
         fields = ["symbol", "status", "previous_session", "previous_high", "previous_low", "first_close", "first_high", "first_low", "second_high",
-                  "second_low", "third_high", "third_low"]
+                  "second_low"]
         writer = csv.DictWriter(stream, fieldnames=fields)
         writer.writeheader()
         writer.writerows(report["matches"])
@@ -315,7 +316,7 @@ def print_summary(report):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     source = parser.add_mutually_exclusive_group(required=True)
-    source.add_argument("--csv", help="Offline candles: symbol,timestamp,open,high,low,close,interval (5 or D); include daily index reference")
+    source.add_argument("--csv", help="Offline candles: symbol,timestamp,open,high,low,close,interval (15 or D; legacy 5 is not scanned); include daily index reference")
     source.add_argument("--fyers", action="store_true", help="Read FYERS historical candles")
     source.add_argument("--report", help="Print a saved report.json as names and statuses; no API requests")
     parser.add_argument("--symbols", help="One FYERS symbol per line; required for FYERS mode")
@@ -332,12 +333,12 @@ def main(argv=None):
     if args.date is None:
         parser.error("--date is required for a candle scan")
     now = datetime.now(IST)
-    if now < datetime.combine(args.date, daytime(9, 30), IST):
-        parser.error("Wait until 09:30 IST on the session date so all three candles are closed")
+    if now < datetime.combine(args.date, OPENING_END, IST):
+        parser.error("Wait until 09:45 IST on the session date so both fifteen-minute candles are closed")
     try:
         if args.fyers:
             if not args.symbols:
-                parser.error("--fyers requires --symbols with current NIFTY 500 constituents")
+                parser.error("--fyers requires --symbols with the desired stock universe")
             grouped, errors = fetch_fyers(load_symbols(args.symbols), args.date)
         else:
             progress(f"Reading candle CSV for {args.date.isoformat()}...")
@@ -366,6 +367,7 @@ def main(argv=None):
                  f"{len(errors)} errors.")
         complete = not errors and all(r["status"] != "incomplete" for r in rows)
         report = {"session": args.date.isoformat(), "timezone": "Asia/Kolkata",
+                  "interval": INTERVAL, "candle_count": 2,
                   "complete": complete,
                   "matches": [r for r in rows if r["status"] == "match"],
                   "results": rows, "errors": errors}

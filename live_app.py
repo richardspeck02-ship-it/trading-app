@@ -15,7 +15,7 @@ import webbrowser
 
 import requests
 
-from scanner import (Candle, IST, SESSION_INDEX, daily_request, evaluate, history_error,
+from scanner import (Candle, INTERVAL, IST, OPENING_END, SESSION_INDEX, daily_request, evaluate, history_error,
                      opening_request, parse_history, previous_candle, previous_session, progress)
 from universe import load_live_symbols, validate_live_symbols
 
@@ -68,9 +68,9 @@ class LiveState:
                 return
             record["trade_time"] = trade
             minute = (trade.hour * 60 + trade.minute) - (9 * 60 + 15)
-            if not 0 <= minute < 15:
+            if not 0 <= minute < 30:
                 return
-            bucket = minute // 5
+            bucket = minute // 15
             bar = record["bars"].get(bucket)
             if bar is None:
                 record["bars"][bucket] = [price, price, price, price]
@@ -81,7 +81,7 @@ class LiveState:
 
     def preview(self, record, now):
         bars = record["bars"]
-        if now < datetime.combine(self.session, daytime(9, 20), IST) or not all(i in bars for i in (0, 1)):
+        if now < datetime.combine(self.session, daytime(9, 30), IST) or not all(i in bars for i in (0, 1)):
             return "Waiting for opening candles"
         first = bars[0]
         prior = self.previous.get(record["symbol"])
@@ -89,11 +89,11 @@ class LiveState:
             return "Waiting for previous-session range"
         if not (first[3] > prior.high or first[3] < prior.low):
             return "No opening breakout (provisional)"
-        if any(bars[i][2] < first[2] or bars[i][1] > first[1] for i in (1, 2) if i in bars):
+        second = bars[1]
+        if second[2] < first[2] or second[1] > first[1]:
             return "Outside range (provisional)"
-        if 2 not in bars:
-            return "Inside so far (2 candles, provisional)"
-        return "Candidate (provisional)" if now >= datetime.combine(self.session, daytime(9, 30), IST) else "Inside so far (3rd forming, provisional)"
+        return ("Candidate (provisional)" if now >= datetime.combine(self.session, OPENING_END, IST)
+                else "Inside so far (2nd forming, provisional)")
 
     def apply_history(self, symbol, candles, now):
         status, levels = evaluate(candles, self.session, now, self.previous_session)
@@ -126,6 +126,7 @@ class LiveState:
                              "stale": stale, "status": status, "levels": levels,
                              "error": official.get("error") if official else record.get("subscription_error")})
             return {"session": self.session.isoformat(), "time": now.isoformat(), "demo": self.demo,
+                    "interval": INTERVAL, "candle_count": 2,
                     "previous_session": self.previous_session.isoformat() if self.previous_session else None,
                     "feed": self.feed, "notice": self.notice, "universe": self.universe, "total": len(rows),
                     "seen": sum(r["price"] is not None for r in rows),
@@ -142,11 +143,11 @@ class LiveState:
         stream = io.StringIO(newline="")
         writer = csv.writer(stream)
         writer.writerow(["session", "symbol", "last_price", "price_updated", "first_high", "first_low",
-                         "second_high", "second_low", "third_high", "third_low",
+                         "second_high", "second_low",
                          "first_close", "previous_session", "previous_high", "previous_low"])
         for r in rows:
             writer.writerow([self.session.isoformat(), r["symbol"], r["price"], r["updated"],
-                             *(r["levels"].get(k) for k in ("first_high", "first_low", "second_high", "second_low", "third_high", "third_low", "first_close", "previous_session", "previous_high", "previous_low"))])
+                             *(r["levels"].get(k) for k in ("first_high", "first_low", "second_high", "second_low", "first_close", "previous_session", "previous_high", "previous_low"))])
         return stream.getvalue().encode("utf-8-sig")
 
 
@@ -204,7 +205,7 @@ def verify_worker(state, stop, client_id, token):
             elif symbol not in state.previous:
                 request = daily_request(symbol, state.session, state.previous_session)
                 phase = "daily"
-            elif now < datetime.combine(state.session, daytime(9, 30, 3), IST):
+            elif now < datetime.combine(state.session, daytime(9, 45, 3), IST):
                 # Load all previous ranges before waiting for opening bars.
                 pending = [s for s in remaining if s not in state.previous]
                 if not pending:
@@ -233,7 +234,7 @@ def verify_worker(state, stop, client_id, token):
                     return
                 if response.status_code != 200:
                     raise ValueError(detail)
-                candles = parse_history(data, "5" if phase == "opening" else "D")
+                candles = parse_history(data, INTERVAL if phase == "opening" else "D")
                 if phase == "reference":
                     previous = previous_session(candles, state.session)
                     if previous is None:
@@ -350,11 +351,11 @@ def demo_state():
     state.feed = "DEMO — synthetic prices, no FYERS connection"
     state.notice = "DEMO ONLY. Real scans need FYERS login and a trading session."
     candles = [Candle(datetime.combine(today, daytime(9, minute), IST), 100, high, low, 100)
-               for minute, high, low in ((15, 110, 90), (20, 110, 95), (25, 105, 90))]
+               for minute, high, low in ((15, 110, 90), (30, 110, 90))]
     state.previous_session = today - timedelta(days=1)
     prior = Candle(datetime.combine(state.previous_session, daytime(0), IST), 95, 99, 90, 95, interval="D")
     state.previous["NSE:DEMO-EQ"] = prior
-    state.apply_history("NSE:DEMO-EQ", [prior] + candles, datetime.combine(today, daytime(9, 31), IST))
+    state.apply_history("NSE:DEMO-EQ", [prior] + candles, datetime.combine(today, daytime(9, 46), IST))
     state.records["NSE:DEMO-EQ"].update(price=102.5, updated=datetime.now(IST).isoformat())
     return state
 
@@ -382,7 +383,7 @@ def main(argv=None):
         if now.weekday() >= 5:
             state.notice = "Weekend: no regular NSE session is expected today. Demo mode is available; start a real session before 09:15 IST on a trading day."
         elif now >= datetime.combine(state.session, daytime(9, 15), IST):
-            state.notice = "Started after the opening bell: early ticks may be missing. Historical reconciliation starts after 09:30; complete coverage may take several minutes."
+            state.notice = "Started after the opening bell: early ticks may be missing. Historical reconciliation starts after 09:45; complete coverage may take several minutes."
     stop, socket = threading.Event(), None
     server = ThreadingHTTPServer(("127.0.0.1", 8765), handler_for(state))
     try:

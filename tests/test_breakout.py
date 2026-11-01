@@ -17,14 +17,14 @@ from live_app import LiveState, verify_worker
 class BreakoutTests(unittest.TestCase):
     session = date(2026, 10, 30)
     prior_date = date(2026, 10, 29)
-    now = datetime(2026, 10, 30, 9, 31, tzinfo=IST)
+    now = datetime(2026, 10, 30, 9, 46, tzinfo=IST)
 
     def prior(self, day=None, high=104, low=96):
         return Candle(datetime.combine(day or self.prior_date, time(), IST), 100, high, low, 100, "D")
 
     def opening(self, close=105, day=None):
         return [Candle(datetime.combine(day or self.session, time(9, m), IST),
-                       100, 110, 90, close if m == 15 else 100) for m in (15, 20, 25)]
+                       100, 110, 90, close if m == 15 else 100) for m in (15, 30)]
 
     def test_strict_close_above_or_below_not_wicks_or_equalities(self):
         for close, expected in [(105, "match"), (95, "match"), (104, "no_match"),
@@ -41,7 +41,7 @@ class BreakoutTests(unittest.TestCase):
     def test_inclusive_inside_rule_is_still_required_after_breakout(self):
         candles = [self.prior()] + self.opening()
         self.assertEqual(evaluate(candles, self.session, self.now, self.prior_date)[0], "match")
-        for index in (2, 3):
+        for index in (2,):
             for field, value in [("high", 111), ("low", 89)]:
                 changed = list(candles)
                 changed[index] = replace(changed[index], **{field: value})
@@ -91,8 +91,8 @@ class BreakoutTests(unittest.TestCase):
         calls = [call.kwargs["data"] for call in model.return_value.history.call_args_list]
         self.assertEqual(calls[0]["symbol"], SESSION_INDEX)
         self.assertEqual(calls[1], daily_request("NSE:ABB-EQ", session, prior))
-        self.assertEqual(calls[2]["resolution"], "5")
-        now = datetime.combine(session, time(9, 31), IST)
+        self.assertEqual(calls[2]["resolution"], "15")
+        now = datetime.combine(session, time(9, 46), IST)
         self.assertEqual(evaluate(grouped["NSE:ABB-EQ"], session, now,
                                   previous_session(grouped[SESSION_INDEX], session))[0], "match")
 
@@ -121,7 +121,7 @@ class BreakoutTests(unittest.TestCase):
     def test_live_preview_waits_for_prior_range_and_rejects_equal_close(self):
         state = LiveState(["NSE:ABB-EQ"], self.session)
         record = state.records["NSE:ABB-EQ"]
-        record["bars"] = {i: [100, 110, 90, 104] for i in range(3)}
+        record["bars"] = {i: [100, 110, 90, 104] for i in range(2)}
         self.assertEqual(state.preview(record, self.now), "Waiting for previous-session range")
         state.previous["NSE:ABB-EQ"] = self.prior()
         self.assertEqual(state.preview(record, self.now), "No opening breakout (provisional)")
@@ -155,13 +155,13 @@ class BreakoutTests(unittest.TestCase):
                 state, request = self.run_worker([self.response([self.prior()]), self.response([self.prior()]), self.response(self.opening(close))])
                 self.assertEqual(state.official["NSE:ABB-EQ"]["status"], status)
                 self.assertEqual(state.export("txt"), b"NSE:ABB-EQ\n" if status == "match" else b"")
-                self.assertEqual([c.kwargs["params"]["resolution"] for c in request.call_args_list], ["D", "D", "5"])
+                self.assertEqual([c.kwargs["params"]["resolution"] for c in request.call_args_list], ["D", "D", "15"])
 
     def test_live_worker_uses_session_before_holiday_weekend(self):
         session, prior = date(2026, 10, 5), date(2026, 10, 1)
         daily = self.prior(prior)
         state, request = self.run_worker([self.response([daily]), self.response([daily]), self.response(self.opening(day=session))],
-                                         session, datetime.combine(session, time(9, 31), IST))
+                                         session, datetime.combine(session, time(9, 46), IST))
         self.assertEqual(state.previous_session, prior)
         self.assertEqual(request.call_args_list[1].kwargs["params"]["range_from"], "2026-10-01")
         self.assertEqual(state.export("txt"), b"NSE:ABB-EQ\n")

@@ -34,13 +34,14 @@ class ReportTests(unittest.TestCase):
             self.assertIn("MATCH\nABB", output.getvalue())
             fetch.assert_not_called()
 
-    def test_request_covers_only_first_three_candle_starts(self):
+    def test_request_covers_only_first_two_fifteen_minute_starts(self):
         request = opening_request("NSE:ABB-EQ", date(2026, 10, 30))
         self.assertEqual(request["date_format"], "0")
+        self.assertEqual(request["resolution"], "15")
         start = datetime.fromtimestamp(int(request["range_from"]), IST)
         end = datetime.fromtimestamp(int(request["range_to"]), IST)
         self.assertEqual(start.isoformat(), "2026-10-30T09:15:00+05:30")
-        self.assertEqual(end.isoformat(), "2026-10-30T09:29:59+05:30")
+        self.assertEqual(end.isoformat(), "2026-10-30T09:44:59+05:30")
 
     @patch("scanner.time.sleep")
     @patch("fyers_apiv3.fyersModel.FyersModel")
@@ -49,10 +50,10 @@ class ReportTests(unittest.TestCase):
         epoch = int(datetime(2026, 10, 30, 9, 15, tzinfo=IST).timestamp())
         daily = {"s": "ok", "candles": [[epoch - 86400, 95, 99, 90, 95]]}
         model.return_value.history.side_effect = [daily, daily, {"s": "ok", "candles": [
-            [epoch + offset, 100, 110, 90, 105] for offset in (0, 300, 600, 900)]}]
+            [epoch + offset, 100, 110, 90, 105] for offset in (0, 900, 1800)]}]
         with redirect_stderr(io.StringIO()):
             grouped, errors = fetch_fyers(["NSE:ABB-EQ"], date(2026, 10, 30))
-        self.assertEqual(len(grouped["NSE:ABB-EQ"]), 4)
+        self.assertEqual(len(grouped["NSE:ABB-EQ"]), 3)
         self.assertEqual(grouped["NSE:ABB-EQ"][0].interval, "D")
         self.assertFalse(errors)
 
@@ -63,12 +64,16 @@ class ReportTests(unittest.TestCase):
             folder = next(Path(directory).iterdir())
             report = json.loads((folder / "report.json").read_text())
             self.assertTrue(report["complete"])
+            self.assertEqual(report["interval"], "15")
+            self.assertEqual(report["candle_count"], 2)
             self.assertEqual((folder / "watchlist.txt").read_text(), "DEMO_MATCH\n")
             with (folder / "matches.csv").open(newline="") as stream:
                 matches = list(csv.DictReader(stream))
             self.assertEqual(len(matches), 1)
+            self.assertNotIn("third_high", matches[0])
+            self.assertNotIn("third_low", matches[0])
             self.assertEqual(float(matches[0]["second_high"]), float(matches[0]["first_high"]))
-            self.assertEqual(float(matches[0]["third_low"]), float(matches[0]["first_low"]))
+            self.assertEqual(float(matches[0]["second_low"]), float(matches[0]["first_low"]))
             self.assertEqual((folder / "failed-symbols.txt").read_text(), "")
             self.assertTrue((folder / "candles.csv").exists())
 
@@ -82,3 +87,13 @@ class ReportTests(unittest.TestCase):
             self.assertNotEqual(first, second)
             self.assertEqual((first / "failed-symbols.txt").read_text().splitlines(), ["NSE:ABB-EQ", "NSE:ACC-EQ"])
             self.assertFalse(json.loads((first / "report.json").read_text())["complete"])
+
+    @patch("scanner.datetime")
+    def test_cli_refuses_scan_before_second_fifteen_minute_candle_closes(self, clock):
+        clock.now.return_value = datetime(2026, 10, 30, 9, 44, 59, tzinfo=IST)
+        clock.combine = datetime.combine
+        output = io.StringIO()
+        with redirect_stderr(output), self.assertRaises(SystemExit) as caught:
+            main(["--csv", "examples/candles.csv", "--date", "2026-10-30"])
+        self.assertEqual(caught.exception.code, 2)
+        self.assertIn("Wait until 09:45 IST", output.getvalue())

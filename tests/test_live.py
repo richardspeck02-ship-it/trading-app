@@ -24,28 +24,31 @@ class LiveTests(unittest.TestCase):
 
     def candles(self, outside=False):
         return [self.prior] + [Candle(datetime.combine(self.session, daytime(9, minute), IST), 100, high, low, 100)
-                for minute, high, low in ((15, 110, 90), (20, 111 if outside else 110, 95), (25, 108, 90))]
+                for minute, high, low in ((15, 110, 90), (30, 111 if outside else 110, 90))]
 
     def test_inclusive_candidate_is_never_exported_before_confirmation(self):
-        for minute in (15, 20, 25):
+        for minute in (15, 30):
             self.tick(minute, 0, 100)
             self.tick(minute, 1, 110)
             self.tick(minute, 2, 90)
             self.tick(minute, 3, 100)
-        snapshot = self.state.snapshot(datetime(2026, 10, 30, 9, 30, tzinfo=IST))
+        snapshot = self.state.snapshot(datetime(2026, 10, 30, 9, 45, tzinfo=IST))
         self.assertEqual(snapshot["rows"][0]["status"], "Candidate (provisional)")
         self.assertEqual(self.state.export("txt"), b"")
 
     def test_history_can_reject_stream_candidate(self):
-        self.state.apply_history("NSE:ABB-EQ", self.candles(True), datetime(2026, 10, 30, 9, 31, tzinfo=IST))
+        self.state.apply_history("NSE:ABB-EQ", self.candles(True), datetime(2026, 10, 30, 9, 46, tzinfo=IST))
         self.assertEqual(self.state.snapshot()["rows"][0]["status"], "Confirmed no match")
         self.assertEqual(self.state.export("txt"), b"")
 
     def test_only_confirmed_matches_export(self):
-        self.state.apply_history("NSE:ABB-EQ", self.candles(), datetime(2026, 10, 30, 9, 31, tzinfo=IST))
+        self.state.apply_history("NSE:ABB-EQ", self.candles(), datetime(2026, 10, 30, 9, 46, tzinfo=IST))
         self.assertEqual(self.state.export("txt"), b"NSE:ABB-EQ\n")
         self.assertIn("NSE:ABB-EQ", self.state.export("csv").decode("utf-8-sig"))
         self.assertNotIn("NSE:ACC-EQ", self.state.export("csv").decode("utf-8-sig"))
+        self.assertNotIn("third_high", self.state.export("csv").decode("utf-8-sig"))
+        self.assertEqual(self.state.snapshot()["interval"], "15")
+        self.assertEqual(self.state.snapshot()["candle_count"], 2)
 
     def test_prices_without_trade_timestamps_do_not_build_candles(self):
         self.state.tick({"symbol": "NSE:ABB-EQ", "ltp": 100}, datetime(2026, 10, 30, 9, 15, tzinfo=IST))
@@ -60,7 +63,7 @@ class LiveTests(unittest.TestCase):
         self.assertEqual(self.state.records["NSE:ABB-EQ"]["bars"], {})
 
     def test_missing_candles_are_not_exported(self):
-        self.state.apply_history("NSE:ABB-EQ", self.candles()[:3], datetime(2026, 10, 30, 9, 31, tzinfo=IST))
+        self.state.apply_history("NSE:ABB-EQ", self.candles()[:2], datetime(2026, 10, 30, 9, 46, tzinfo=IST))
         self.assertEqual(self.state.snapshot()["rows"][0]["status"], "Incomplete historical candles")
         self.assertEqual(self.state.export("txt"), b"")
 
@@ -78,13 +81,12 @@ class LiveTests(unittest.TestCase):
     @patch("live_app.datetime")
     @patch("live_app.requests.get")
     def test_confirmation_prioritizes_streaming_candidates(self, request, clock):
-        now = datetime(2026, 10, 30, 9, 31, tzinfo=IST)
+        now = datetime(2026, 10, 30, 9, 46, tzinfo=IST)
         clock.now.return_value = now
         clock.combine = datetime.combine
         clock.fromtimestamp = datetime.fromtimestamp
         self.state.records["NSE:ACC-EQ"]["bars"] = {0: [100, 110, 90, 100],
-                                                    1: [100, 105, 95, 100],
-                                                    2: [100, 105, 95, 100]}
+                                                    1: [100, 105, 95, 100]}
         response = request.return_value.__enter__.return_value
         response.status_code = 200
         response.json.return_value = {"s": "ok", "candles": [
@@ -100,7 +102,7 @@ class LiveTests(unittest.TestCase):
     @patch("live_app.datetime")
     @patch("live_app.requests.get")
     def test_verification_rate_limit_stops_without_publishing_match(self, request, clock):
-        clock.now.return_value = datetime(2026, 10, 30, 9, 31, tzinfo=IST)
+        clock.now.return_value = datetime(2026, 10, 30, 9, 46, tzinfo=IST)
         clock.combine = datetime.combine
         request.return_value.__enter__.return_value.status_code = 429
         request.return_value.__enter__.return_value.json.return_value = {"s": "error", "code": 429, "message": "private"}
@@ -159,3 +161,43 @@ class LiveTests(unittest.TestCase):
         state = LiveState([f"NSE:TEST{i}-EQ" for i in range(101)], self.session)
         with self.assertRaisesRegex(ValueError, "at most 100"):
             connect_feed(state, Mock(), "private-client", "private-token")
+
+    def test_stream_aggregates_full_fifteen_minutes_and_stops_at_0945(self):
+        self.tick(14, 59, 999)
+        self.assertEqual(self.state.records["NSE:ABB-EQ"]["bars"], {})
+        for minute, second, price in [(15, 0, 100), (19, 59, 98), (20, 0, 110),
+                                      (25, 0, 90), (29, 59, 105), (30, 0, 104),
+                                      (35, 0, 110), (40, 0, 90), (44, 59, 100)]:
+            self.tick(minute, second, price)
+        bars = self.state.records["NSE:ABB-EQ"]["bars"]
+        self.assertEqual(bars, {0: [100, 110, 90, 105], 1: [104, 110, 90, 100]})
+        self.tick(45, 0, 500)
+        self.assertEqual(bars, {0: [100, 110, 90, 105], 1: [104, 110, 90, 100]})
+        record = self.state.records["NSE:ABB-EQ"]
+        self.assertEqual(self.state.preview(record, datetime(2026, 10, 30, 9, 44, 59, tzinfo=IST)),
+                         "Inside so far (2nd forming, provisional)")
+        self.assertEqual(self.state.preview(record, datetime(2026, 10, 30, 9, 45, tzinfo=IST)),
+                         "Candidate (provisional)")
+        self.assertEqual(self.state.export("txt"), b"")
+
+    @patch("live_app.datetime")
+    @patch("live_app.requests.get")
+    def test_worker_waits_until_094503_for_official_opening_bars(self, request, clock):
+        clock.combine = datetime.combine
+        clock.fromtimestamp = datetime.fromtimestamp
+        response = request.return_value.__enter__.return_value
+        response.status_code = 200
+        response.json.return_value = {"s": "ok", "candles": [
+            [c.timestamp.timestamp(), c.open, c.high, c.low, c.close] for c in self.candles()[1:]]}
+        for minute, second, calls in [(44, 59, 0), (45, 2, 0), (45, 3, 1)]:
+            with self.subTest(minute=minute, second=second):
+                request.reset_mock()
+                clock.now.return_value = datetime(2026, 10, 30, 9, minute, second, tzinfo=IST)
+                stop = Mock()
+                stop.wait.side_effect = [False, True]
+                with redirect_stderr(io.StringIO()):
+                    verify_worker(self.state, stop, "test", "test")
+                self.assertEqual(request.call_count, calls)
+                if calls:
+                    self.assertEqual(request.call_args.kwargs["params"]["resolution"], "15")
+                    self.assertEqual(self.state.official["NSE:ABB-EQ"]["status"], "match")

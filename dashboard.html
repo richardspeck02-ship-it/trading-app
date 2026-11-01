@@ -4,11 +4,11 @@
 <style>
 :root{color-scheme:dark;font-family:system-ui,sans-serif;background:#0c1220;color:#e7edf7}body{max-width:1400px;margin:auto;padding:28px}h1{font-size:28px;margin:0}header{display:flex;justify-content:space-between;align-items:center;gap:20px;flex-wrap:wrap}p{color:#aebed4;line-height:1.6}a{color:#a9d6ff}button,select,input,.download{font:inherit;padding:10px 14px;border:1px solid #384864;border-radius:8px;background:#17243a;color:#eef5ff}.download{text-decoration:none;display:inline-block}section{margin:24px 0}.stats{display:flex;gap:16px;flex-wrap:wrap}.card{background:#142035;padding:18px 24px;border-radius:10px;min-width:160px}.card strong{display:block;font-size:28px}.card span{color:#aebed4}.notice{padding:15px 18px;background:#192b41;border-left:3px solid #69b9ff;line-height:1.6}.controls{display:flex;gap:12px;flex-wrap:wrap}table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}th,td{text-align:left;padding:14px 10px;border-bottom:1px solid #23324a}th{color:#aebed4;font-size:13px}td{font-size:14px}.match{color:#82e2bb}.stale{color:#f0bb6b}.scroll{overflow:auto}.empty{padding:30px;color:#aebed4}small{color:#aebed4}#health{color:#88d3fd}
 </style></head><body>
-<header><div><h1>Garv System</h1><p id="universe">Live opening-range scanner · Standard account</p></div><div><strong id="health">Connecting to dashboard…</strong><br><small id="clock"></small></div></header>
+<header><div><h1>Garv System</h1><p id="universe">Live 15-minute opening-range scanner · Standard account</p></div><div><strong id="health">Connecting to dashboard…</strong><br><small id="clock"></small></div></header>
 <div class="notice" id="notice" role="status">Waiting for scanner state.</div>
 <details id="errors" hidden><summary>Recent stream errors</summary><ul id="error-list"></ul></details>
 <section class="stats"><div class="card"><strong id="confirmed">0</strong><span>Confirmed matches</span></div><div class="card"><strong id="candidate">0</strong><span>Provisional candidates</span></div><div class="card"><strong id="coverage">0 / 0</strong><span>Symbols with prices</span></div><div class="card"><strong id="verified">0 / 0</strong><span>Patterns confirmed or rejected</span></div></section>
-<p><strong>Rule:</strong> The 09:15 five-minute candle must close strictly above the previous trading session’s high or strictly below its low (equality fails). Then 09:20 and 09:25 five-minute candle highs ≤ the 09:15 high, and lows ≥ the 09:15 low. Wicks and equality count. Before 09:30 the pattern is still forming.</p>
+<p><strong>Rule:</strong> The 09:15–09:30 fifteen-minute candle must close strictly above the previous trading session’s high or strictly below its low (equality fails). The 09:30–09:45 candle must have its high ≤ the first candle’s high and its low ≥ the first candle’s low. Wicks and equality count. Only these two candles are required. Before 09:45 IST the pattern is still forming.</p>
 <section class="controls"><label>Show <select id="filter"><option value="candidates">Matches &amp; candidates</option><option value="confirmed">Confirmed matches only</option><option value="all">All stocks</option></select></label><input id="search" type="search" aria-label="Search stock symbol" placeholder="Search stock symbol"><a class="download" href="/matches.csv">Download confirmed CSV</a><a class="download" href="/watchlist.txt">Download symbol list</a></section>
 <div class="scroll"><table><thead><tr><th>STOCK</th><th>LAST PRICE</th><th>PATTERN</th><th>FIRST HIGH</th><th>FIRST LOW</th><th>FIRST CLOSE</th><th>PREVIOUS HIGH</th><th>PREVIOUS LOW</th><th>PRICE UPDATED (IST)</th><th>FEED</th></tr></thead><tbody id="rows"></tbody></table></div>
 <div id="empty" class="empty">Waiting for data.</div>
@@ -20,7 +20,7 @@ const fmt=x=>x==null?'—':Number(x).toFixed(2);
 const candidate=r=>r.status.startsWith('Candidate')||r.status.startsWith('Inside so far');
 const ist=value=>value?new Date(value).toLocaleTimeString('en-IN',{timeZone:'Asia/Kolkata',hour12:false}):'—';
 function render(){if(!latest)return;const s=latest;
-byId('universe').textContent='Live opening-range scanner · '+s.universe;
+byId('universe').textContent='Live 15-minute opening-range scanner · '+s.universe;
 byId('health').textContent=(s.demo?'DEMO · ':'')+s.feed;
 byId('clock').textContent=s.session+' · '+ist(s.time)+' IST'+(s.previous_session?' · Previous session: '+s.previous_session:'');
 byId('notice').textContent=s.notice;
